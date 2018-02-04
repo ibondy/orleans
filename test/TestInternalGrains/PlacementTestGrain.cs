@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -151,8 +151,8 @@ namespace UnitTests.Grains
     {
         public Task<PlacementStrategy> GetDefaultPlacement()
         {
-            var defaultStrategy = this.ServiceProvider.GetRequiredService<DefaultPlacementStrategy>();
-            return Task.FromResult(defaultStrategy.PlacementStrategy);
+            var defaultStrategy = this.ServiceProvider.GetRequiredService<PlacementStrategy>();
+            return Task.FromResult(defaultStrategy);
         }
     }
 
@@ -168,7 +168,7 @@ namespace UnitTests.Grains
         
         public override Task OnActivateAsync()
         {
-            this.logger = GetLogger();
+            this.logger = this.GetLogger();
             logger.Info("OnActivateAsync");
             DelayDeactivation(TimeSpan.MaxValue);   // make sure this activation is not collected.
             cachedContent = RuntimeIdentity;        // store your silo identity as a local cached content in this grain.
@@ -194,7 +194,7 @@ namespace UnitTests.Grains
 
         public override Task OnActivateAsync()
         {
-            this.logger = GetLogger();
+            this.logger = this.GetLogger();
             logger.Info("OnActivateAsync");
             return base.OnActivateAsync();
         }

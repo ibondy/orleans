@@ -11,3 +11,6 @@
 [assembly: InternalsVisibleTo("TesterInternal")]
 [assembly: InternalsVisibleTo("TestInternalGrainInterfaces")]
 [assembly: InternalsVisibleTo("TestInternalGrains")]
+
+// Legacy provider support
+[assembly: InternalsVisibleTo("Orleans.Core.Legacy")]

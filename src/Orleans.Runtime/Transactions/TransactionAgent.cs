@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -8,6 +8,8 @@ using Orleans.Runtime;
 using Orleans.Concurrency;
 using Orleans.Runtime.Configuration;
 using DateTime = System.DateTime;
+using Orleans.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace Orleans.Transactions
 {
@@ -117,7 +119,7 @@ namespace Orleans.Transactions
 
         //metrics related
         private TransactionAgentMetrics metrics;
-        public TransactionAgent(ILocalSiloDetails siloDetails, ITransactionManagerService tmService, ILoggerFactory loggerFactory, ITelemetryProducer telemetryProducer, Factory<NodeConfiguration> getNodeConfig)
+        public TransactionAgent(ILocalSiloDetails siloDetails, ITransactionManagerService tmService, ILoggerFactory loggerFactory, ITelemetryProducer telemetryProducer, IOptions<SiloStatisticsOptions> statisticsOptions)
             : base(Constants.TransactionAgentSystemTargetId, siloDetails.SiloAddress, loggerFactory)
         {
             logger = loggerFactory.CreateLogger<TransactionAgent>();
@@ -132,12 +134,12 @@ namespace Orleans.Transactions
             transactionCommitQueue = new ConcurrentQueue<TransactionInfo>();
             commitCompletions = new ConcurrentDictionary<long, TaskCompletionSource<bool>>();
             outstandingCommits = new HashSet<long>();
-            this.metrics = new TransactionAgentMetrics(telemetryProducer, getNodeConfig().StatisticsMetricsTableWriteInterval);
+            this.metrics = new TransactionAgentMetrics(telemetryProducer, statisticsOptions.Value.MetricsTableWriteInterval);
         }
 
         #region ITransactionAgent
 
-        public async Task<TransactionInfo> StartTransaction(bool readOnly, TimeSpan timeout)
+        public async Task<ITransactionInfo> StartTransaction(bool readOnly, TimeSpan timeout)
         {
             if (readOnly)
             {
@@ -152,8 +154,10 @@ namespace Orleans.Transactions
             return new TransactionInfo(id);
         }
 
-        public async Task Commit(TransactionInfo transactionInfo)
+        public async Task Commit(ITransactionInfo info)
         {
+            var transactionInfo = (TransactionInfo)info;
+
             TransactionsStatisticsGroup.OnTransactionCommitRequest();
 
             if (transactionInfo.IsReadOnly)
@@ -196,15 +200,17 @@ namespace Orleans.Transactions
             {
                 TransactionsStatisticsGroup.OnTransactionAborted();
                 abortedTransactions.TryAdd(transactionInfo.TransactionId, 0);
-                throw new OrleansPrepareFailedException(transactionInfo.TransactionId);
+                throw new OrleansPrepareFailedException(transactionInfo.TransactionId.ToString());
             }
             commitCompletions.TryAdd(transactionInfo.TransactionId, completion);
             transactionCommitQueue.Enqueue(transactionInfo);
             await completion.Task;
         }
 
-        public void Abort(TransactionInfo transactionInfo, OrleansTransactionAbortedException reason)
+        public void Abort(ITransactionInfo info, OrleansTransactionAbortedException reason)
         {
+            var transactionInfo = (TransactionInfo)info;
+
             abortedTransactions.TryAdd(transactionInfo.TransactionId, 0);
             foreach (var g in transactionInfo.WriteSet.Keys)
             {
@@ -347,7 +353,7 @@ namespace Orleans.Transactions
                             else
                             {
                                 TransactionsStatisticsGroup.OnTransactionInDoubt();
-                                completion.SetException(new OrleansTransactionInDoubtException(completedId));
+                                completion.SetException(new OrleansTransactionInDoubtException(completedId.ToString()));
                             }
                         }
                     }
@@ -373,7 +379,7 @@ namespace Orleans.Transactions
                     if (commitCompletions.TryRemove(tx.TransactionId, out completion))
                     {
                         outstandingCommits.Remove(tx.TransactionId);
-                        completion.SetException(new OrleansTransactionInDoubtException(tx.TransactionId));
+                        completion.SetException(new OrleansTransactionInDoubtException(tx.TransactionId.ToString()));
                     }
                 }
             }

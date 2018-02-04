@@ -11,7 +11,6 @@ using Orleans.Runtime;
 using Orleans.Runtime.Configuration;
 using Orleans.TestingHost.Utils;
 using TestExtensions;
-using UnitTests.StorageTests;
 using Xunit;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -41,6 +40,7 @@ namespace UnitTests.MembershipTests
         protected readonly string connectionString;
         protected ILoggerFactory loggerFactory;
         protected IOptions<SiloOptions> siloOptions;
+        protected IOptions<ClusterClientOptions> clientOptions;
         protected const string testDatabaseName = "OrleansMembershipTest";//for relational storage
         protected readonly ClientConfiguration clientConfiguration;
         protected MembershipTableTestsBase(ConnectionStringFixture fixture, TestEnvironmentFixture environment, LoggerFilterOptions filters)
@@ -55,7 +55,8 @@ namespace UnitTests.MembershipTests
 
             fixture.InitializeConnectionStringAccessor(GetConnectionString);
             this.connectionString = fixture.ConnectionString;
-            this.siloOptions = Options.Create(new SiloOptions() { ClusterId = this.clusterId });
+            this.siloOptions = Options.Create(new SiloOptions { ClusterId = this.clusterId });
+            this.clientOptions = Options.Create(new ClusterClientOptions { ClusterId = this.clusterId });
             var adoVariant = GetAdoInvariant();
 
             membershipTable = CreateMembershipTable(logger);
@@ -351,7 +352,7 @@ namespace UnitTests.MembershipTests
 
             TableVersion newTableVer = tableData.Version.Next();
 
-            var insertions = Task.WhenAll(Enumerable.Range(1, 20).Select(i => membershipTable.InsertRow(data, newTableVer)));
+            var insertions = Task.WhenAll(Enumerable.Range(1, 20).Select(async i => { try { return await membershipTable.InsertRow(data, newTableVer); } catch { return false; } }));
 
             Assert.True((await insertions).Single(x => x), "InsertRow failed");
 
@@ -366,7 +367,7 @@ namespace UnitTests.MembershipTests
                     TableVersion tableVersion = updatedTableData.Version.Next();
 
                     await Task.Delay(10);
-                    done = await membershipTable.UpdateRow(updatedRow.Item1, updatedRow.Item2, tableVersion);
+                    try { done = await membershipTable.UpdateRow(updatedRow.Item1, updatedRow.Item2, tableVersion); } catch { done = false; }
                 } while (!done);
             })).WithTimeout(TimeSpan.FromSeconds(30));
 
@@ -388,10 +389,10 @@ namespace UnitTests.MembershipTests
             MembershipEntry newEntry = CreateMembershipEntryForTest();
             bool ok = await membershipTable.InsertRow(newEntry, newTableVersion);
             Assert.True(ok);
-            
-            
+
+
             var amAliveTime = DateTime.UtcNow;
-            
+
             // This mimics the arguments MembershipOracle.OnIAmAliveUpdateInTableTimer passes in
             var entry = new MembershipEntry
             {
@@ -409,6 +410,8 @@ namespace UnitTests.MembershipTests
         }
 
         private static int generation;
+
+
         // Utility methods
         private static MembershipEntry CreateMembershipEntryForTest()
         {
