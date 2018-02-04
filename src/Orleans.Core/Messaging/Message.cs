@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using Orleans.CodeGeneration;
+using Orleans.Hosting;
 using Orleans.Runtime.Configuration;
 using Orleans.Serialization;
 using Orleans.Transactions;
@@ -311,7 +312,7 @@ namespace Orleans.Runtime
             return Direction != Directions.OneWay && !id.IsSystemTarget && !Constants.IsSystemGrain(id);
         }
 
-        public TransactionInfo TransactionInfo
+        public ITransactionInfo TransactionInfo
         {
             get { return Headers.TransactionInfo; }
             set { Headers.TransactionInfo = value; }
@@ -349,9 +350,9 @@ namespace Orleans.Runtime
 
         // Forwardings are used by the receiver, usualy when it cannot process the message and forwars it to another silo to perform the processing
         // (got here due to outdated cache, silo is shutting down/overloaded, ...).
-        public bool MayForward(GlobalConfiguration config)
+        public bool MayForward(SiloMessagingOptions messagingOptions)
         {
-            return ForwardCount < config.MaxForwardCount;
+            return ForwardCount < messagingOptions.MaxForwardCount;
         }
 
         /// <summary>
@@ -675,6 +676,30 @@ namespace Orleans.Runtime
             return msg != null && Object.Equals(TargetSilo, msg.TargetSilo);
         }
 
+        // For statistical measuring of time spent in queues.
+        private ITimeInterval timeInterval;
+
+        public void Start()
+        {
+            timeInterval = TimeIntervalFactory.CreateTimeInterval(true);
+            timeInterval.Start();
+        }
+
+        public void Stop()
+        {
+            timeInterval.Stop();
+        }
+
+        public void Restart()
+        {
+            timeInterval.Restart();
+        }
+
+        public TimeSpan Elapsed
+        {
+            get { return timeInterval.Elapsed; }
+        }
+
         public static Message CreatePromptExceptionResponse(Message request, Exception exception)
         {
             return new Message
@@ -766,7 +791,7 @@ namespace Orleans.Runtime
             private bool _isNewPlacement;
             private bool _isUsingIfaceVersion;
             private ResponseTypes _result;
-            private TransactionInfo _transactionInfo;
+            private ITransactionInfo _transactionInfo;
             private TimeSpan? _timeToLive;
             private string _debugContext;
             private List<ActivationAddress> _cacheInvalidationHeader;
@@ -962,7 +987,7 @@ namespace Orleans.Runtime
                 }
             }
 
-            public TransactionInfo TransactionInfo
+            public ITransactionInfo TransactionInfo
             {
                 get { return _transactionInfo; }
                 set
@@ -1222,7 +1247,7 @@ namespace Orleans.Runtime
                 }
 
                 if ((headers & Headers.TRANSACTION_INFO) != Headers.NONE)
-                    SerializationManager.SerializeInner(input.TransactionInfo, context, typeof(TransactionInfo));
+                    SerializationManager.SerializeInner(input.TransactionInfo, context, typeof(ITransactionInfo));
             }
 
             [DeserializerMethod]
@@ -1332,7 +1357,7 @@ namespace Orleans.Runtime
                 result.IsTransactionRequired = (headers & Headers.IS_TRANSACTION_REQUIRED) != Headers.NONE;
 
                 if ((headers & Headers.TRANSACTION_INFO) != Headers.NONE)
-                    result.TransactionInfo = SerializationManager.DeserializeInner<TransactionInfo>(context);
+                    result.TransactionInfo = SerializationManager.DeserializeInner<ITransactionInfo>(context);
 
                 return result;
             }

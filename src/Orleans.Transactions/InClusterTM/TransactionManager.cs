@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Collections.Concurrent;
@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Orleans.Runtime;
 using Orleans.Transactions.Abstractions;
 using Orleans.Runtime.Configuration;
+using Orleans.Hosting;
 
 namespace Orleans.Transactions
 { 
@@ -47,7 +48,7 @@ namespace Orleans.Transactions
         private Task transactionLogMaintenanceTask;
         private TransactionManagerMetrics metrics;
         public TransactionManager(TransactionLog transactionLog, IOptions<TransactionsOptions> configOption, ILoggerFactory loggerFactory, ITelemetryProducer telemetryProducer,
-            Factory<NodeConfiguration> getNodeConfig, TimeSpan? logMaintenanceInterval = null)
+            IOptions<SiloStatisticsOptions> statisticsOptions, TimeSpan? logMaintenanceInterval = null)
         {
             this.transactionLog = transactionLog;
             this.options = configOption.Value;
@@ -68,7 +69,7 @@ namespace Orleans.Transactions
             this.resources = new Dictionary<ITransactionalResource, long>();
             this.transactions = new List<Transaction>();
             this.metrics =
-                new TransactionManagerMetrics(telemetryProducer, getNodeConfig().StatisticsMetricsTableWriteInterval);
+                new TransactionManagerMetrics(telemetryProducer, statisticsOptions.Value.MetricsTableWriteInterval);
             this.checkpointedLSN = 0;
             this.IsRunning = false;
         }
@@ -169,7 +170,7 @@ namespace Orleans.Transactions
                 {
                     foreach (var waiting in tx.WaitingTransactions)
                     {
-                        var cascading = new OrleansCascadingAbortException(waiting.Info.TransactionId, tx.TransactionId);
+                        var cascading = new OrleansCascadingAbortException(waiting.Info.TransactionId.ToString(), tx.TransactionId.ToString());
                         AbortTransaction(waiting.Info.TransactionId, cascading);
                     }
 
@@ -241,7 +242,7 @@ namespace Orleans.Transactions
 
                         if (abort)
                         {
-                            AbortTransaction(transactionInfo.TransactionId, new OrleansCascadingAbortException(transactionInfo.TransactionId, cascadingDependentId));
+                            AbortTransaction(transactionInfo.TransactionId, new OrleansCascadingAbortException(transactionInfo.TransactionId.ToString(), cascadingDependentId.ToString()));
                         }
                         else if (pending)
                         {
@@ -264,7 +265,7 @@ namespace Orleans.Transactions
             else
             {
                 // Don't have a record of the transaction any more so presumably it's aborted.
-                throw new OrleansTransactionAbortedException(transactionInfo.TransactionId, "Transaction presumed to be aborted");
+                throw new OrleansTransactionAbortedException(transactionInfo.TransactionId.ToString(), "Transaction presumed to be aborted");
             }
         }
 
@@ -644,7 +645,7 @@ namespace Orleans.Transactions
                 if (txRecord.Value.State == TransactionState.Started &&
                     txRecord.Value.ExpirationTime < now)
                 {
-                    AbortTransaction(txRecord.Key, new OrleansTransactionTimeoutException(txRecord.Key));
+                    AbortTransaction(txRecord.Key, new OrleansTransactionTimeoutException(txRecord.Key.ToString()));
                 }
             }
 

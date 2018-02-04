@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -14,7 +14,7 @@ using Orleans.Runtime.MultiClusterNetwork;
 
 namespace Orleans.Runtime.GrainDirectory
 {
-    internal class GlobalSingleInstanceActivationMaintainer : SingleTaskAsynchAgent
+    internal class GlobalSingleInstanceActivationMaintainer : AsynchAgent
     {
         private readonly object lockable = new object();
         private readonly LocalGrainDirectory router;
@@ -22,7 +22,7 @@ namespace Orleans.Runtime.GrainDirectory
         private readonly IInternalGrainFactory grainFactory;
         private readonly TimeSpan period;
         private readonly IMultiClusterOracle multiClusterOracle;
-        private readonly SiloOptions siloOptions;
+        private readonly ILocalSiloDetails siloDetails;
         private readonly MultiClusterOptions multiClusterOptions;
 
         // scanning the entire directory for doubtful activations is too slow.
@@ -33,11 +33,10 @@ namespace Orleans.Runtime.GrainDirectory
         public GlobalSingleInstanceActivationMaintainer(
             LocalGrainDirectory router,
             ILogger logger,
-            GlobalConfiguration config,
             IInternalGrainFactory grainFactory,
             IMultiClusterOracle multiClusterOracle,
             ExecutorService executorService,
-            IOptions<SiloOptions> siloOptions,
+            ILocalSiloDetails siloDetails,
             IOptions<MultiClusterOptions> multiClusterOptions,
             ILoggerFactory loggerFactory)
             : base(executorService, loggerFactory)
@@ -46,9 +45,9 @@ namespace Orleans.Runtime.GrainDirectory
             this.logger = logger;
             this.grainFactory = grainFactory;
             this.multiClusterOracle = multiClusterOracle;
-            this.siloOptions = siloOptions.Value;
+            this.siloDetails = siloDetails;
             this.multiClusterOptions = multiClusterOptions.Value;
-            this.period = config.GlobalSingleInstanceRetryInterval;
+            this.period = multiClusterOptions.Value.GlobalSingleInstanceRetryInterval;
             logger.Debug("GSIP:M GlobalSingleInstanceActivationMaintainer Started, Period = {0}", period);
         }
 
@@ -90,7 +89,7 @@ namespace Orleans.Runtime.GrainDirectory
             if (!this.multiClusterOptions.HasMultiClusterNetwork)
                 return;
 
-            var myClusterId = this.siloOptions.ClusterId;
+            var myClusterId = this.siloDetails.ClusterId;
 
             while (router.Running)
             {
@@ -198,7 +197,7 @@ namespace Orleans.Runtime.GrainDirectory
                 {
                     var clusterGatewayAddress = this.multiClusterOracle.GetRandomClusterGateway(remotecluster);
                     var clusterGrainDir = this.grainFactory.GetSystemTarget<IClusterGrainDirectory>(Constants.ClusterDirectoryServiceId, clusterGatewayAddress);
-                    var r = await clusterGrainDir.ProcessActivationRequestBatch(addresses.Select(a => a.Grain).ToArray(), this.siloOptions.ClusterId);
+                    var r = await clusterGrainDir.ProcessActivationRequestBatch(addresses.Select(a => a.Grain).ToArray(), this.siloDetails.ClusterId);
                     batchResponses.Add(r);
                 }
                 catch (Exception e)

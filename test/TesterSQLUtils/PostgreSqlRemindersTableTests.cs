@@ -1,11 +1,11 @@
-﻿using System.Threading.Tasks;
+using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Orleans;
 using Orleans.Runtime;
 using Orleans.Runtime.Configuration;
 using Orleans.Runtime.ReminderService;
-using Orleans.SqlUtils;
+using Orleans.Tests.SqlUtils;
 using TestExtensions;
 using UnitTests.General;
 using Xunit;
@@ -28,7 +28,7 @@ namespace UnitTests.RemindersTest
 
         protected override IReminderTable CreateRemindersTable()
         {
-            return new SqlReminderTable(this.ClusterFixture.Services.GetRequiredService<IGrainReferenceConverter>());
+            return new SqlReminderTable(this.ClusterFixture.Services.GetRequiredService<IGrainReferenceConverter>(), this.siloOptions, this.adoNetOptions, this.storageOptions);
         }
 
         protected override string GetAdoInvariant()
@@ -51,7 +51,7 @@ namespace UnitTests.RemindersTest
         [SkippableFact]
         public async Task RemindersTable_PostgreSql_RemindersRange()
         {
-            await RemindersRange();
+            await RemindersRange(iterations: 50);
         }
 
         [SkippableFact]

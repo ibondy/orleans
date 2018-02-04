@@ -4,8 +4,10 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Orleans.CodeGeneration;
 using Orleans.GrainDirectory;
+using Orleans.Hosting;
 using Orleans.Runtime.Configuration;
 using Orleans.Runtime.GrainDirectory;
 using Orleans.Runtime.Messaging;
@@ -23,36 +25,39 @@ namespace Orleans.Runtime
         private readonly OrleansTaskScheduler scheduler;
         private readonly Catalog catalog;
         private readonly ILogger logger;
-        private readonly ClusterConfiguration config;
+        private readonly SiloMessagingOptions messagingOptions;
         private readonly PlacementDirectorsManager placementDirectorsManager;
         private readonly ILocalGrainDirectory localGrainDirectory;
         private readonly MessageFactory messagefactory;
         private readonly SerializationManager serializationManager;
         private readonly CompatibilityDirectorManager compatibilityDirectorManager;
+        private readonly SchedulingOptions schedulingOptions;
         private readonly SafeRandom random;
         private readonly ILogger invokeWorkItemLogger;
         internal Dispatcher(
             OrleansTaskScheduler scheduler, 
             ISiloMessageCenter transport, 
-            Catalog catalog, 
-            ClusterConfiguration config,
+            Catalog catalog,
+            IOptions<SiloMessagingOptions> messagingOptions,
             PlacementDirectorsManager placementDirectorsManager,
             ILocalGrainDirectory localGrainDirectory,
             MessageFactory messagefactory,
             SerializationManager serializationManager,
             CompatibilityDirectorManager compatibilityDirectorManager,
-            ILoggerFactory loggerFactory)
+            ILoggerFactory loggerFactory,
+            IOptions<SchedulingOptions> schedulerOptions)
         {
             this.scheduler = scheduler;
             this.catalog = catalog;
             Transport = transport;
-            this.config = config;
+            this.messagingOptions = messagingOptions.Value;
             this.invokeWorkItemLogger = loggerFactory.CreateLogger<InvokeWorkItem>();
             this.placementDirectorsManager = placementDirectorsManager;
             this.localGrainDirectory = localGrainDirectory;
             this.messagefactory = messagefactory;
             this.serializationManager = serializationManager;
             this.compatibilityDirectorManager = compatibilityDirectorManager;
+            this.schedulingOptions = schedulerOptions.Value;
             logger = loggerFactory.CreateLogger<Dispatcher>();
             random = new SafeRandom();
         }
@@ -271,7 +276,7 @@ namespace Orleans.Runtime
                 else if (!ActivationMayAcceptRequest(targetActivation, message))
                 {
                     // Check for deadlock before Enqueueing.
-                    if (config.Globals.PerformDeadlockDetection && !message.TargetGrain.IsSystemTarget)
+                    if (schedulingOptions.PerformDeadlockDetection && !message.TargetGrain.IsSystemTarget)
                     {
                         try
                         {
@@ -323,12 +328,34 @@ namespace Orleans.Runtime
         public bool CanInterleave(ActivationData targetActivation, Message incoming)
         {
             bool canInterleave = 
-                   catalog.CanInterleave(targetActivation.ActivationId, incoming)
-                || incoming.IsAlwaysInterleave
+                   incoming.IsAlwaysInterleave
                 || targetActivation.Running == null
-                || (targetActivation.Running.IsReadOnly && incoming.IsReadOnly);
+                || (targetActivation.Running.IsReadOnly && incoming.IsReadOnly)
+                || (schedulingOptions.AllowCallChainReentrancy && targetActivation.ActivationId.Equals(incoming.SendingActivation))
+                || catalog.CanInterleave(targetActivation.ActivationId, incoming);
 
             return canInterleave;
+        }
+
+        /// <summary>
+        /// https://github.com/dotnet/orleans/issues/3184
+        /// Checks whether reentrancy is allowed for calls to grains that are already part of the call chain.
+        /// Covers following case: grain A calls grain B, and while executing the invoked method B calls back to A. 
+        /// Design: Senders collection `RunningRequestsSenders` contains sending grains references
+        /// during duration of request processing. If target of outgoing request is found in that collection - 
+        /// such request will be marked as interleaving in order to prevent deadlocks.
+        /// </summary>
+        private void MarkSameCallChainMessageAsInterleaving(ActivationData sendingActivation, Message outgoing)
+        {
+            if (!schedulingOptions.AllowCallChainReentrancy)
+            {
+                return;
+            }
+
+            if (sendingActivation?.RunningRequestsSenders.Contains(outgoing.TargetActivation) == true)
+            {
+                outgoing.IsAlwaysInterleave = true;
+            }
         }
 
         /// <summary>
@@ -560,7 +587,7 @@ namespace Orleans.Runtime
 
         internal bool TryResendMessage(Message message)
         {
-            if (!message.MayResend(this.config.Globals.MaxResendCount)) return false;
+            if (!message.MayResend(this.messagingOptions.MaxResendCount)) return false;
 
             message.ResendCount = message.ResendCount + 1;
             MessagingProcessingStatisticsGroup.OnIgcMessageResend(message);
@@ -570,7 +597,7 @@ namespace Orleans.Runtime
 
         internal bool TryForwardMessage(Message message, ActivationAddress forwardingAddress)
         {
-            if (!message.MayForward(this.config.Globals)) return false;
+            if (!message.MayForward(this.messagingOptions)) return false;
 
             message.ForwardCount = message.ForwardCount + 1;
             MessagingProcessingStatisticsGroup.OnIgcMessageForwared(message);
@@ -640,7 +667,7 @@ namespace Orleans.Runtime
                     return;
                 }
 
-                TransportMessage(message);
+                TransportMessage(message, sendingActivation);
             };
 
             try
@@ -648,7 +675,7 @@ namespace Orleans.Runtime
                 var messageAddressingTask = AddressMessage(message);
                 if (messageAddressingTask.Status == TaskStatus.RanToCompletion)
                 {
-                    TransportMessage(message);
+                    TransportMessage(message, sendingActivation);
                 }
                 else
                 {
@@ -694,11 +721,15 @@ namespace Orleans.Runtime
             // second, we check for a strategy associated with the target's interface. third, we check for a strategy associated with the activation sending the
             // message.
             var strategy = targetAddress.Grain.IsGrain ? catalog.GetGrainPlacementStrategy(targetAddress.Grain) : null;
-         
+
             var request = message.IsUsingInterfaceVersions
                 ? message.GetDeserializedBody(this.serializationManager) as InvokeMethodRequest
                 : null;
-            var target = new PlacementTarget(message.TargetGrain, request?.InterfaceId ?? 0, request?.InterfaceVersion ?? 0);
+            var target = new PlacementTarget(
+                message.TargetGrain,
+                message.RequestContextData,
+                request?.InterfaceId ?? 0,
+                request?.InterfaceVersion ?? 0);
 
             PlacementResult placementResult;
             if (placementDirectorsManager.TrySelectActivationSynchronously(
@@ -772,8 +803,9 @@ namespace Orleans.Runtime
         /// Directly send a message to the transport without processing
         /// </summary>
         /// <param name="message"></param>
-        public void TransportMessage(Message message)
+        public void TransportMessage(Message message, ActivationData sendingActivation = null)
         {
+            MarkSameCallChainMessageAsInterleaving(sendingActivation, message);
             if (logger.IsEnabled(LogLevel.Trace)) logger.Trace(ErrorCode.Dispatcher_Send_AddressedMessage, "Addressed message {0}", message);
             Transport.SendMessage(message);
         }

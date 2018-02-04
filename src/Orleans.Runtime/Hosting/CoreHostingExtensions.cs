@@ -17,8 +17,24 @@ namespace Orleans.Hosting
         /// Configure the container to use Orleans, including the default silo name & services.
         /// </summary>
         /// <param name="builder">The host builder.</param>
+        /// <param name="configureOptions">The delegate that configures the options.</param>
         /// <returns>The host builder.</returns>
-        public static ISiloHostBuilder ConfigureOrleans(this ISiloHostBuilder builder)
+        public static ISiloHostBuilder ConfigureOrleans(this ISiloHostBuilder builder, Action<SiloOptions> configureOptions)
+        {
+            var optionsConfigurator = configureOptions != null
+                ? ob => ob.Configure(configureOptions)
+                : default(Action<OptionsBuilder<SiloOptions>>);
+
+            return builder.ConfigureOrleans(optionsConfigurator);
+        }
+
+        /// <summary>
+        /// Configure the container to use Orleans, including the default silo name & services.
+        /// </summary>
+        /// <param name="builder">The host builder.</param>
+        /// <param name="configureOptions">The delegate that configures the options using the options builder.</param>
+        /// <returns>The host builder.</returns>
+        public static ISiloHostBuilder ConfigureOrleans(this ISiloHostBuilder builder, Action<OptionsBuilder<SiloOptions>> configureOptions = null)
         {
             builder.ConfigureServices((context, services) =>
             {
@@ -28,11 +44,13 @@ namespace Orleans.Hosting
                                            ?? context.HostingEnvironment.ApplicationName
                                            ?? $"Silo_{Guid.NewGuid().ToString("N").Substring(0, 5)}");
 
-                    services.TryAddSingleton<Silo>(sp => new Silo(sp.GetRequiredService<SiloInitializationParameters>(), sp));
+                    services.TryAddSingleton<Silo>();
                     DefaultSiloServices.AddDefaultServices(context, services);
 
                     context.Properties.Add("OrleansServicesAdded", true);
                 }
+
+                configureOptions?.Invoke(services.AddOptions<SiloOptions>());
             });
             return builder;
         }
@@ -47,47 +65,6 @@ namespace Orleans.Hosting
         {
             builder.Configure<SiloOptions>(options => options.SiloName = siloName);
             return builder;
-        }
-
-        /// <summary>
-        /// Specifies the configuration to use for this silo.
-        /// </summary>
-        /// <param name="builder">The host builder.</param>
-        /// <param name="configuration">The configuration.</param>
-        /// <remarks>This method may only be called once per builder instance.</remarks>
-        /// <returns>The silo builder.</returns>
-        public static ISiloHostBuilder UseConfiguration(this ISiloHostBuilder builder, ClusterConfiguration configuration)
-        {
-            if (configuration == null) throw new ArgumentNullException(nameof(configuration));
-            return builder.ConfigureServices((context, services) =>
-            {
-                services.AddLegacyClusterConfigurationSupport(configuration);
-            });
-        }
-
-        /// <summary>
-        /// Loads <see cref="ClusterConfiguration"/> using <see cref="ClusterConfiguration.StandardLoad"/>.
-        /// </summary>
-        /// <param name="builder">The host builder.</param>
-        /// <returns>The silo builder.</returns>
-        public static ISiloHostBuilder LoadClusterConfiguration(this ISiloHostBuilder builder)
-        {
-            var configuration = new ClusterConfiguration();
-            configuration.StandardLoad();
-            return builder.UseConfiguration(configuration);
-        }
-        
-        /// <summary>
-        /// Configures a localhost silo.
-        /// </summary>
-        /// <param name="builder">The host builder.</param>
-        /// <param name="siloPort">The silo-to-silo communication port.</param>
-        /// <param name="gatewayPort">The client-to-silo communication port.</param>
-        /// <returns>The silo builder.</returns>
-        public static ISiloHostBuilder ConfigureLocalHostPrimarySilo(this ISiloHostBuilder builder, int siloPort = 22222, int gatewayPort = 40000)
-        {
-            builder.ConfigureSiloName(Silo.PrimarySiloName);
-            return builder.UseConfiguration(ClusterConfiguration.LocalhostPrimarySilo(siloPort, gatewayPort));
         }
 
         /// <summary>
