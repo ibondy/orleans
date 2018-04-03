@@ -1,4 +1,3 @@
-using Orleans;
 using Orleans.Providers.Streams.Common;
 using Orleans.Runtime;
 using Orleans.Runtime.Configuration;
@@ -11,10 +10,10 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using Microsoft.Azure.EventHubs;
 using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Orleans.Configuration;
 using TestExtensions;
 using Xunit;
 using Orleans.ServiceBus.Providers.Testing;
@@ -42,8 +41,9 @@ namespace ServiceBus.Tests.EvictionStrategyTests
             //an mock eh settings
             this.ehSettings = new EventHubPartitionSettings
             {
-                Hub = new EventHubSettings(),
-                Partition = "MockPartition"
+                Hub = new EventHubOptions(),
+                Partition = "MockPartition",
+                ReceiverOptions = new EventHubReceiverOptions()
             };
 
             //set up cache pressure monitor and purge predicate
@@ -208,9 +208,9 @@ namespace ServiceBus.Tests.EvictionStrategyTests
             };
 
             this.receiver1 = new EventHubAdapterReceiver(this.ehSettings, this.CacheFactory, this.CheckPointerFactory, NullLoggerFactory.Instance, 
-                new DefaultEventHubReceiverMonitor(monitorDimensions, this.telemetryProducer), new SiloStatisticsOptions(), this.telemetryProducer);
+                new DefaultEventHubReceiverMonitor(monitorDimensions, this.telemetryProducer), new LoadSheddingOptions(), this.telemetryProducer);
             this.receiver2 = new EventHubAdapterReceiver(this.ehSettings, this.CacheFactory, this.CheckPointerFactory, NullLoggerFactory.Instance,
-                new DefaultEventHubReceiverMonitor(monitorDimensions, this.telemetryProducer), new SiloStatisticsOptions(), this.telemetryProducer);
+                new DefaultEventHubReceiverMonitor(monitorDimensions, this.telemetryProducer), new LoadSheddingOptions(), this.telemetryProducer);
             this.receiver1.Initialize(this.timeOut);
             this.receiver2.Initialize(this.timeOut);
         }

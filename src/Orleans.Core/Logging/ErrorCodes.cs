@@ -391,8 +391,9 @@ namespace Orleans
         LifecycleStartFailure           = SiloBase + 50,
         LifecycleStopFailure            = SiloBase + 51,
         SiloStartPerfMeasure            = SiloBase + 52,
+        LifecycleStagesReport           = SiloBase + 53,
 
-        CatalogBase                     = Runtime + 500,
+        CatalogBase = Runtime + 500,
         CatalogNonExistingActivation1   = CatalogBase + 1,
         Catalog_UnregisterManyAsync     = CatalogBase + 2,
         Catalog_DestroyActivations       = CatalogBase + 3,
@@ -917,6 +918,7 @@ namespace Orleans
         Provider_ProviderNotControllable        = ProviderManagerBase + 16,
         Provider_CatalogNoLogConsistencyProvider       = ProviderManagerBase + 17,
         Provider_CatalogLogConsistencyProviderAllocated = ProviderManagerBase + 18,
+        Provider_ErrorFromClose                  = ProviderManagerBase + 19,
 
         PersistentStreamPullingAgentBase = Runtime + 3300,
         PersistentStreamPullingAgent_01 = PersistentStreamPullingAgentBase + 1,
@@ -1022,6 +1024,7 @@ namespace Orleans
 
         TypeManagerBase = Runtime + 4200,
         TypeManager_GetSiloGrainInterfaceMapError = TypeManagerBase + 1,
+        TypeManager_GetClusterGrainTypeResolverError = TypeManagerBase + 2,
 
         LogConsistencyBase = Runtime + 4300,
         LogConsistency_UserCodeException = LogConsistencyBase + 1,
