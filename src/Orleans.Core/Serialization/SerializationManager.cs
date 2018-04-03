@@ -18,8 +18,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Orleans.ApplicationParts;
 using Orleans.CodeGeneration;
+using Orleans.Configuration;
 using Orleans.Runtime;
-using Orleans.Hosting;
 using Orleans.Metadata;
 using Orleans.Utilities;
 
@@ -107,7 +107,7 @@ namespace Orleans.Serialization
 
         public SerializationManager(
             IServiceProvider serviceProvider,
-            IOptions<SerializationProviderOptions> serializatonProviderOptions,
+            IOptions<SerializationProviderOptions> serializationProviderOptions,
             ILoggerFactory loggerFactory,
             ITypeResolver typeResolver)
         {
@@ -128,9 +128,9 @@ namespace Orleans.Serialization
             deserializers = new Dictionary<RuntimeTypeHandle, Deserializer>();
             grainRefConstructorDictionary = new ConcurrentDictionary<Type, Func<GrainReference, GrainReference>>();
 
-            var serializatonProviderOptionsValue = serializatonProviderOptions.Value;
+            var options = serializationProviderOptions.Value;
 
-            fallbackSerializer = GetFallbackSerializer(serviceProvider, serializatonProviderOptionsValue.FallbackSerializationProvider);
+            fallbackSerializer = GetFallbackSerializer(serviceProvider, options.FallbackSerializationProvider);
 
             if (StatisticsCollector.CollectSerializationStats)
             {
@@ -167,7 +167,7 @@ namespace Orleans.Serialization
                 FallbackCopiesTimeStatistic = CounterStatistic.FindOrCreate(StatisticNames.SERIALIZATION_BODY_FALLBACK_DEEPCOPY_MILLIS, storeFallback).AddValueConverter(Utils.TicksToMilliSeconds);
             }
 
-            RegisterSerializationProviders(serializatonProviderOptionsValue.SerializationProviders);
+            RegisterSerializationProviders(options.SerializationProviders);
         }
 
         public void RegisterSerializers(IApplicationPartManager applicationPartManager)
@@ -354,6 +354,7 @@ namespace Orleans.Serialization
         /// For instance, abstract base types and interfaces need to be registered this way.
         /// </summary>
         /// <param name="t">Type to be registered.</param>
+        /// <param name="typeKey">Type key to associate with the type.</param>
         private void Register(Type t, string typeKey = null)
         {
             string name = typeKey ?? t.OrleansTypeKeyString();
