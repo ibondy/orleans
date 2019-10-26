@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Orleans.Configuration;
+using Orleans.Internal;
 using Orleans.Runtime.Scheduler;
 using Orleans.Statistics;
 
@@ -38,7 +39,7 @@ namespace Orleans.Runtime
         public DeploymentLoadPublisher(
             ILocalSiloDetails siloDetails,
             ISiloStatusOracle siloStatusOracle,
-            IOptions<SiloStatisticsOptions> statisticsOptions,
+            IOptions<DeploymentLoadPublisherOptions> options,
             IInternalGrainFactory grainFactory,
             OrleansTaskScheduler scheduler,
             ILoggerFactory loggerFactory,
@@ -61,7 +62,7 @@ namespace Orleans.Runtime
             this.appEnvironmentStatistics = appEnvironmentStatistics;
             this.hostEnvironmentStatistics = hostEnvironmentStatistics;
             this.loadSheddingOptions = loadSheddingOptions;
-            statisticsRefreshTime = statisticsOptions.Value.DeploymentLoadPublisherRefreshTime;
+            statisticsRefreshTime = options.Value.DeploymentLoadPublisherRefreshTime;
             periodicStats = new ConcurrentDictionary<SiloAddress, SiloRuntimeStatistics>();
             siloStatisticsChangeListeners = new List<ISiloStatisticsChangeListener>();
         }

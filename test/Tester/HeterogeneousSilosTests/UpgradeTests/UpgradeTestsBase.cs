@@ -8,10 +8,12 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Configuration.Memory;
 using Orleans;
 using Orleans.CodeGeneration;
+using Orleans.Configuration;
+using Orleans.Hosting;
 using Orleans.Runtime;
 using Orleans.Runtime.Configuration;
 using Orleans.TestingHost;
-using Orleans.TestingHost.Legacy;
+using Orleans.Utilities;
 using Orleans.Versions.Compatibility;
 using Orleans.Versions.Selector;
 using TestExtensions;
@@ -21,10 +23,12 @@ using Xunit;
 
 namespace Tester.HeterogeneousSilosTests.UpgradeTests
 {
-    public abstract class UpgradeTestsBase : IDisposable
+    public abstract class UpgradeTestsBase : IDisposable, IAsyncLifetime
     {
-        private readonly TimeSpan refreshInterval = TimeSpan.FromMilliseconds(200);
+        private static readonly TimeSpan RefreshInterval = TimeSpan.FromMilliseconds(200);
+
         private TimeSpan waitDelay;
+
         protected IClusterClient Client => this.cluster.Client;
         protected IManagementGrain ManagementGrain => this.cluster.Client.GetGrain<IManagementGrain>(0);
 #if DEBUG
@@ -32,11 +36,9 @@ namespace Tester.HeterogeneousSilosTests.UpgradeTests
 #else
         private const string BuildConfiguration = "Release";
 #endif
-        private const string AssemblyGrainsV1Build = "TestVersionGrainsV1";
-        private const string AssemblyGrainsV2Build = "TestVersionGrainsV2";
         private const string CommonParentDirectory = "test";
         private const string BinDirectory = "bin";
-        private const string VersionsProjectDirectory = "Versions";
+        private const string VersionsProjectDirectory = "Grains";
         private const string GrainsV1ProjectName = "TestVersionGrains";
         private const string GrainsV2ProjectName = "TestVersionGrains2";
         private const string VersionTestBinaryName = "TestVersionGrains.dll";
@@ -48,38 +50,28 @@ namespace Tester.HeterogeneousSilosTests.UpgradeTests
         private TestClusterBuilder builder;
         private TestCluster cluster;
 
-        protected abstract VersionSelectorStrategy VersionSelectorStrategy { get; }
+        protected abstract Type VersionSelectorStrategy { get; }
 
-        protected abstract CompatibilityStrategy CompatibilityStrategy { get; }
+        protected abstract Type CompatibilityStrategy { get; }
 
         protected virtual short SiloCount => 2;
 
         protected UpgradeTestsBase()
         {
-            // Setup dll references
-            // If test run from old master cmd line with single output directory
-            if (Directory.Exists(AssemblyGrainsV1Build))
+            var testDirectory = new DirectoryInfo(GetType().Assembly.Location);
+
+            while (String.Compare(testDirectory.Name, CommonParentDirectory, StringComparison.OrdinalIgnoreCase) != 0 || testDirectory.Parent == null)
             {
-                assemblyGrainsV1Dir = new DirectoryInfo(AssemblyGrainsV1Build);
-                assemblyGrainsV2Dir = new DirectoryInfo(AssemblyGrainsV2Build);
+                testDirectory = testDirectory.Parent;
             }
-            else
+
+            if (testDirectory.Parent == null)
             {
-                var testDirectory = new DirectoryInfo(GetType().Assembly.Location);
-
-                while (String.Compare(testDirectory.Name, CommonParentDirectory, StringComparison.OrdinalIgnoreCase) != 0 || testDirectory.Parent == null)
-                {
-                    testDirectory = testDirectory.Parent;
-                }
-
-                if (testDirectory.Parent == null)
-                {
-                    throw new InvalidOperationException($"Cannot locate 'test' directory starting from '{GetType().Assembly.Location}'");
-                }
-
-                assemblyGrainsV1Dir = GetVersionTestDirectory(testDirectory, GrainsV1ProjectName);
-                assemblyGrainsV2Dir = GetVersionTestDirectory(testDirectory, GrainsV2ProjectName);
+                throw new InvalidOperationException($"Cannot locate 'test' directory starting from '{GetType().Assembly.Location}'");
             }
+
+            assemblyGrainsV1Dir = GetVersionTestDirectory(testDirectory, GrainsV1ProjectName);
+            assemblyGrainsV2Dir = GetVersionTestDirectory(testDirectory, GrainsV2ProjectName);
         }
 
         private DirectoryInfo GetVersionTestDirectory(DirectoryInfo testDirectory, string directoryName)
@@ -207,23 +199,17 @@ namespace Tester.HeterogeneousSilosTests.UpgradeTests
                 // Setup configuration
                 this.builder = new TestClusterBuilder(1)
                 {
-                    CreateSilo = AppDomainSiloHandle.Create
+                    CreateSiloAsync = AppDomainSiloHandle.Create
                 };
                 TestDefaultConfiguration.ConfigureTestCluster(this.builder);
                 builder.Options.ApplicationBaseDirectory = rootDir.FullName;
                 builder.AddSiloBuilderConfigurator<VersionGrainsSiloBuilderConfigurator>();
-                builder.ConfigureLegacyConfiguration(legacy =>
-                {
-                    legacy.ClusterConfiguration.Globals.ExpectedClusterSize = SiloCount;
-                    legacy.ClusterConfiguration.Globals.AssumeHomogenousSilosForTesting = false;
-                    legacy.ClusterConfiguration.Globals.TypeMapRefreshInterval = refreshInterval;
-                    legacy.ClusterConfiguration.Globals.DefaultVersionSelectorStrategy = VersionSelectorStrategy;
-                    legacy.ClusterConfiguration.Globals.DefaultCompatibilityStrategy = CompatibilityStrategy;
-
-                    legacy.ClientConfiguration.Gateways = legacy.ClientConfiguration.Gateways.Take(1).ToList(); // Only use primary gw
-                    
-                    waitDelay = TestClusterLegacyUtils.GetLivenessStabilizationTime(legacy.ClusterConfiguration.Globals, false);
-                });
+                builder.AddClientBuilderConfigurator<VersionGrainsClientConfigurator>();
+                builder.Properties[nameof(SiloCount)] = this.SiloCount.ToString();
+                builder.Properties[nameof(RefreshInterval)] = RefreshInterval.ToString();
+                builder.Properties[nameof(VersionSelectorStrategy)] = this.VersionSelectorStrategy.Name;
+                builder.Properties[nameof(CompatibilityStrategy)] = this.CompatibilityStrategy.Name;
+                waitDelay = TestCluster.GetLivenessStabilizationTime(new ClusterMembershipOptions(), didKill: false);
 
                 this.cluster = builder.Build();
                 await this.cluster.DeployAsync();
@@ -239,10 +225,10 @@ namespace Tester.HeterogeneousSilosTests.UpgradeTests
                 // Override the root directory.
                 var sources = new IConfigurationSource[]
                 {
-                    new MemoryConfigurationSource {InitialData = new TestClusterOptions {ApplicationBaseDirectory = rootDir.FullName}.ToDictionary()}
+                    new MemoryConfigurationSource {InitialData = new Dictionary<string, string>{ [nameof(TestClusterOptions.ApplicationBaseDirectory)] = rootDir.FullName } }
                 };
 
-                silo = TestCluster.StartOrleansSilo(cluster, siloIdx, testClusterOptions, sources);
+                silo = await TestCluster.StartSiloAsync(cluster, siloIdx, testClusterOptions, sources);
             }
 
             this.deployedSilos.Add(silo);
@@ -253,7 +239,7 @@ namespace Tester.HeterogeneousSilosTests.UpgradeTests
 
         protected async Task StopSilo(SiloHandle handle)
         {
-            handle?.StopSilo(true);
+            await handle?.StopSiloAsync(true);
             this.deployedSilos.Remove(handle);
             await Task.Delay(waitDelay);
         }
@@ -268,6 +254,26 @@ namespace Tester.HeterogeneousSilosTests.UpgradeTests
                 silo.Dispose();
             }
             primarySilo.Dispose();
+            this.Client?.Dispose();
+        }
+
+        public Task InitializeAsync()
+        {
+            return Task.CompletedTask;
+        }
+
+        public async Task DisposeAsync()
+        {
+            var primarySilo = this.deployedSilos[0];
+            foreach (var silo in this.deployedSilos.Skip(1))
+            {
+                await silo.StopSiloAsync(true);
+                silo.Dispose();
+            }
+
+            await primarySilo.StopSiloAsync(true);
+            primarySilo.Dispose();
+            if (this.Client != null) await this.Client.Close();
             this.Client?.Dispose();
         }
     }

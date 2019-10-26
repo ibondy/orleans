@@ -5,11 +5,11 @@ using Microsoft.Extensions.Logging;
 using Orleans;
 using Orleans.ApplicationParts;
 using Orleans.Hosting;
-using Orleans.Logging;
 using Orleans.Metadata;
 using Orleans.Runtime.Configuration;
 using Orleans.Serialization;
 using Orleans.TestingHost;
+using Orleans.TestingHost.Logging;
 using RuntimeCodeGen.Interfaces;
 using TestExtensions;
 using Xunit;
@@ -101,6 +101,10 @@ namespace UnitTests
             var result = await grain.SomeMethod(new RuntimeCodeGenPoco());
             Assert.IsType<RuntimeCodeGenPoco>(result);
             Assert.NotNull(result);
+
+            var valueTaskResult = await grain.ValueTaskMethod(new RuntimeCodeGenPoco()).ConfigureAwait(false);
+            Assert.IsType<RuntimeCodeGenPoco>(valueTaskResult);
+            Assert.NotNull(valueTaskResult);
         }
     }
 }

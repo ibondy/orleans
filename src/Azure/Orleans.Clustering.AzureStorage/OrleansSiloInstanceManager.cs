@@ -5,19 +5,18 @@ using System.Linq;
 using System.Net;
 using System.Text;
 using System.Threading.Tasks;
+using Microsoft.Azure.Cosmos.Table;
 using Microsoft.Extensions.Logging;
-using Microsoft.WindowsAzure.Storage.Table;
-using Orleans.Runtime;
 using Orleans.Clustering.AzureStorage;
 using Orleans.Clustering.AzureStorage.Utilities;
+using Orleans.Internal;
+using Orleans.Runtime;
 
 namespace Orleans.AzureUtils
 {
     internal class OrleansSiloInstanceManager
     {
-        public string TableName { get { return INSTANCE_TABLE_NAME; } }
-
-        private const string INSTANCE_TABLE_NAME = "OrleansSiloInstances";
+        public string TableName { get; }
 
         private readonly string INSTANCE_STATUS_CREATED = SiloStatus.Created.ToString();  //"Created";
         private readonly string INSTANCE_STATUS_ACTIVE = SiloStatus.Active.ToString();    //"Active";
@@ -30,17 +29,18 @@ namespace Orleans.AzureUtils
 
         public string DeploymentId { get; private set; }
 
-        private OrleansSiloInstanceManager(string clusterId, string storageConnectionString, ILoggerFactory loggerFactory)
+        private OrleansSiloInstanceManager(string clusterId, string storageConnectionString, string tableName, ILoggerFactory loggerFactory)
         {
             DeploymentId = clusterId;
+            TableName = tableName;
             logger = loggerFactory.CreateLogger<OrleansSiloInstanceManager>();
             storage = new AzureTableDataManager<SiloInstanceTableEntry>(
-                INSTANCE_TABLE_NAME, storageConnectionString, loggerFactory);
+                tableName, storageConnectionString, loggerFactory);
         }
 
-        public static async Task<OrleansSiloInstanceManager> GetManager(string clusterId, string storageConnectionString, ILoggerFactory loggerFactory)
+        public static async Task<OrleansSiloInstanceManager> GetManager(string clusterId, string storageConnectionString, string tableName, ILoggerFactory loggerFactory)
         {
-            var instance = new OrleansSiloInstanceManager(clusterId, storageConnectionString, loggerFactory);
+            var instance = new OrleansSiloInstanceManager(clusterId, storageConnectionString, tableName, loggerFactory);
             try
             {
                 await instance.storage.InitTableAsync()
@@ -175,11 +175,9 @@ namespace Orleans.AzureUtils
             return sb.ToString();
         }
 
-        #region Silo instance table storage operations
-
         internal Task<string> MergeTableEntryAsync(SiloInstanceTableEntry data)
         {
-            return storage.MergeTableEntryAsync(data, AzureStorageUtils.ANY_ETAG); // we merge this without checking eTags.
+            return storage.MergeTableEntryAsync(data, AzureTableUtils.ANY_ETAG); // we merge this without checking eTags.
         }
 
         internal Task<Tuple<SiloInstanceTableEntry, string>> ReadSingleTableEntryAsync(string partitionKey, string rowKey)
@@ -193,19 +191,36 @@ namespace Orleans.AzureUtils
 
             var entries = await storage.ReadAllTableEntriesForPartitionAsync(clusterId);
             var entriesList = new List<Tuple<SiloInstanceTableEntry, string>>(entries);
+
+            await DeleteEntriesBatch(entriesList);
+
+            return entriesList.Count();
+        }
+
+        public async Task CleanupDefunctSiloEntries(DateTimeOffset beforeDate)
+        {
+            var entriesList = (await FindAllSiloEntries())
+                .Where(entry => entry.Item1.Status == INSTANCE_STATUS_DEAD && entry.Item1.Timestamp < beforeDate)
+                .ToList();
+
+            await DeleteEntriesBatch(entriesList);
+        }
+
+        private async Task DeleteEntriesBatch(List<Tuple<SiloInstanceTableEntry, string>> entriesList)
+        {
             if (entriesList.Count <= AzureTableDefaultPolicies.MAX_BULK_UPDATE_ROWS)
             {
                 await storage.DeleteTableEntriesAsync(entriesList);
-            }else
+            }
+            else
             {
-                List<Task> tasks = new List<Task>();
+                var tasks = new List<Task>();
                 foreach (var batch in entriesList.BatchIEnumerable(AzureTableDefaultPolicies.MAX_BULK_UPDATE_ROWS))
                 {
                     tasks.Add(storage.DeleteTableEntriesAsync(batch));
                 }
                 await Task.WhenAll(tasks);
             }
-            return entriesList.Count();
         }
 
         internal async Task<List<Tuple<SiloInstanceTableEntry, string>>> FindSiloEntryAndTableVersionRow(SiloAddress siloAddress)
@@ -272,10 +287,10 @@ namespace Orleans.AzureUtils
             {
                 HttpStatusCode httpStatusCode;
                 string restStatus;
-                if (!AzureStorageUtils.EvaluateException(exc, out httpStatusCode, out restStatus)) throw;
+                if (!AzureTableUtils.EvaluateException(exc, out httpStatusCode, out restStatus)) throw;
 
                 if (logger.IsEnabled(LogLevel.Trace)) logger.Trace("InsertSiloEntryConditionally failed with httpStatusCode={0}, restStatus={1}", httpStatusCode, restStatus);
-                if (AzureStorageUtils.IsContentionError(httpStatusCode)) return false;
+                if (AzureTableUtils.IsContentionError(httpStatusCode)) return false;
 
                 throw;
             }
@@ -298,10 +313,10 @@ namespace Orleans.AzureUtils
             {
                 HttpStatusCode httpStatusCode;
                 string restStatus;
-                if (!AzureStorageUtils.EvaluateException(exc, out httpStatusCode, out restStatus)) throw;
+                if (!AzureTableUtils.EvaluateException(exc, out httpStatusCode, out restStatus)) throw;
 
                 if (logger.IsEnabled(LogLevel.Trace)) logger.Trace("InsertSiloEntryConditionally failed with httpStatusCode={0}, restStatus={1}", httpStatusCode, restStatus);
-                if (AzureStorageUtils.IsContentionError(httpStatusCode)) return false;
+                if (AzureTableUtils.IsContentionError(httpStatusCode)) return false;
 
                 throw;
             }
@@ -326,15 +341,13 @@ namespace Orleans.AzureUtils
             {
                 HttpStatusCode httpStatusCode;
                 string restStatus;
-                if (!AzureStorageUtils.EvaluateException(exc, out httpStatusCode, out restStatus)) throw;
+                if (!AzureTableUtils.EvaluateException(exc, out httpStatusCode, out restStatus)) throw;
 
                 if (logger.IsEnabled(LogLevel.Trace)) logger.Trace("UpdateSiloEntryConditionally failed with httpStatusCode={0}, restStatus={1}", httpStatusCode, restStatus);
-                if (AzureStorageUtils.IsContentionError(httpStatusCode)) return false;
+                if (AzureTableUtils.IsContentionError(httpStatusCode)) return false;
 
                 throw;
             }
         }
-
-        #endregion
     }
 }

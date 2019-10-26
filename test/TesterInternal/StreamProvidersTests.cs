@@ -11,7 +11,12 @@ using Xunit;
 using Xunit.Abstractions;
 using System.Threading.Tasks;
 using Orleans.Hosting;
-using Orleans.Runtime.Configuration;
+using Orleans.Runtime;
+using UnitTests.StorageTests;
+using Orleans.Storage;
+using Orleans.Providers;
+using Orleans.Internal;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace UnitTests.Streaming
 {
@@ -25,13 +30,6 @@ namespace UnitTests.Streaming
             {
                 this.ServiceId = builder.Options.ServiceId;
                 builder.Options.InitialSilosCount = 4;
-                builder.ConfigureLegacyConfiguration(legacy =>
-                {
-                    legacy.ClusterConfiguration.Globals.RegisterStorageProvider<UnitTests.StorageTests.MockStorageProvider>("test1");
-                    legacy.ClusterConfiguration.Globals.RegisterStorageProvider<UnitTests.StorageTests.MockStorageProvider>("test2");
-                    legacy.ClusterConfiguration.Globals.RegisterStorageProvider<UnitTests.StorageTests.ErrorInjectionStorageProvider>("ErrorInjector");
-                    legacy.ClusterConfiguration.Globals.RegisterStorageProvider<UnitTests.StorageTests.MockStorageProvider>("lowercase");
-                });
                 builder.AddSiloBuilderConfigurator<SiloHostConfigurator>();
             }
 
@@ -39,7 +37,14 @@ namespace UnitTests.Streaming
             {
                 public void Configure(ISiloHostBuilder hostBuilder)
                 {
-                    hostBuilder.AddMemoryGrainStorage("MemoryStore");
+                    hostBuilder
+                        .AddMemoryGrainStorage("MemoryStore")
+                        .ConfigureServices(services =>
+                        {
+                            services.AddSingleton<ErrorInjectionStorageProvider>();
+                            services.AddSingletonNamedService<IGrainStorage, ErrorInjectionStorageProvider>("ErrorInjector");
+                            services.AddSingletonNamedService<IControllable, ErrorInjectionStorageProvider>("ErrorInjector");
+                        });
                 }
             }
         }
@@ -88,7 +93,7 @@ namespace UnitTests.Streaming
 
             foreach (var silo in this.HostedCluster.GetActiveSilos().ToList())
             {
-                this.HostedCluster.RestartSilo(silo);
+                await this.HostedCluster.RestartSiloAsync(silo);
             }
 
             output.WriteLine("..... Silos restarted");
@@ -98,8 +103,15 @@ namespace UnitTests.Streaming
 
             foreach (var siloHandle in activeSilos)
             {
-                var serviceId = await this.fixture.Client.GetTestHooks(siloHandle).GetServiceId();
-                Assert.Equal(this.fixture.ServiceId, serviceId); // "ServiceId active in silo"
+                await AsyncExecutorWithRetries.ExecuteWithRetries(async _ =>
+                    {
+                        var serviceId = await this.fixture.Client.GetTestHooks(siloHandle).GetServiceId();
+                        Assert.Equal(this.fixture.ServiceId, serviceId); // "ServiceId active in silo"
+                    },
+                    30,
+                    (ex, i) => ex is OrleansException,
+                    TimeSpan.FromSeconds(60),
+                    new FixedBackoff(TimeSpan.FromSeconds(2)));
             }
         }
     }

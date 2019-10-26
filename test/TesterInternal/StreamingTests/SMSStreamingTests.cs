@@ -1,11 +1,7 @@
-using System;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using Orleans;
 using Orleans.Hosting;
-using Orleans.Providers;
-using Orleans.Providers.Streams.SimpleMessageStream;
-using Orleans.Runtime.Configuration;
 using Orleans.TestingHost;
 using TestExtensions;
 using Xunit;
@@ -16,21 +12,13 @@ namespace UnitTests.StreamingTests
     {
         public class Fixture : BaseTestClusterFixture
         {
-            private static readonly Guid ServiceId = Guid.NewGuid();
             public const string AzureQueueStreamProviderName = StreamTestsConstants.AZURE_QUEUE_STREAM_PROVIDER_NAME;
             public const string SmsStreamProviderName = "SMSProvider";
             public const bool SMSFireAndForgetOnSilo = false;
-            public ClusterConfiguration ClusterConfiguration { get; set; }
 
             protected override void ConfigureTestCluster(TestClusterBuilder builder)
             {
                 builder.Options.InitialSilosCount = 4;
-
-                builder.ConfigureLegacyConfiguration(legacy =>
-                {
-                    legacy.ClusterConfiguration.Globals.ServiceId = ServiceId;
-                    this.ClusterConfiguration = legacy.ClusterConfiguration;
-                });
                 builder.AddSiloBuilderConfigurator<SiloConfigurator>();
                 builder.AddClientBuilderConfigurator<ClientConfiguretor>();
             }
@@ -68,8 +56,6 @@ namespace UnitTests.StreamingTests
             // runner = new SingleStreamTestRunner(SingleStreamTestRunner.SMS_STREAM_PROVIDER_NAME, 0, false);
             fireAndForgetDeliveryProperty = Fixture.SMSFireAndForgetOnSilo;
         }
-
-        #region Simple Message Stream Tests
 
         //------------------------ One to One ----------------------//
 
@@ -204,7 +190,5 @@ namespace UnitTests.StreamingTests
         {
             await runner.StreamTest_22_TestImmutabilityDuringStreaming();
         }
-
-        #endregion Simple Message Stream Tests
     }
 }

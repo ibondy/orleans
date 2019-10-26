@@ -6,10 +6,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Remove="CounterControlProgTests.cs" />
-  </ItemGroup>
-
-  <ItemGroup>
     <Reference Include="System.Runtime.Serialization" />
     <Reference Include="System.ServiceModel" />
     <Reference Include="System.Web.Extensions" />
@@ -18,28 +14,20 @@
   <ItemGroup>
     <PackageReference Include="xunit" Version="$(xUnitVersion)" />
     <PackageReference Include="Xunit.SkippableFact" Version="$(XunitSkippableFactVersion)" />
-    <DotNetCliToolReference Include="dotnet-xunit" Version="$(xUnitVersion)" />
+    <DotNetCliToolReference Include="dotnet-xunit" Version="$(DotNetxUnitVersion)" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Azure\Orleans.Clustering.AzureStorage\Orleans.Clustering.AzureStorage.csproj" />
-    <ProjectReference Include="..\..\src\Orleans.Core.Abstractions\Orleans.Core.Abstractions.csproj" />
-    <ProjectReference Include="..\..\src\Azure\Orleans.Persistence.AzureStorage\Orleans.Persistence.AzureStorage.csproj" />
-    <ProjectReference Include="..\..\src\Orleans.CodeGeneration\Orleans.CodeGeneration.csproj" />
-    <ProjectReference Include="..\..\src\Orleans.Core.Legacy\Orleans.Core.Legacy.csproj" />
-    <ProjectReference Include="..\..\src\OrleansCounterControl\OrleansCounterControl.csproj" />
-    <ProjectReference Include="..\..\src\Orleans.TestingHost\Orleans.TestingHost.csproj" />
-    <ProjectReference Include="..\Orleans.TestingHost.AppDomain\Orleans.TestingHost.AppDomain.csproj" />
-    <ProjectReference Include="..\Orleans.TestingHost.Legacy\Orleans.TestingHost.Legacy.csproj" />
-    <ProjectReference Include="..\Tester\Tester.csproj" />
+    <ProjectReference Include="$(SourceRoot)test\TestInfrastructure\Orleans.TestingHost.AppDomain\Orleans.TestingHost.AppDomain.csproj" />
+    <ProjectReference Include="$(SourceRoot)test\Tester\Tester.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <None Include="App.config" />
-    <Content Include="..\..\src\Orleans.TestingHost\ClientConfigurationForTesting.xml" Link="ClientConfigurationForTesting.xml">
+    <Content Include="$(SourceRoot)src\Orleans.TestingHost\ClientConfigurationForTesting.xml" Link="ClientConfigurationForTesting.xml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <Content Include="..\..\src\Orleans.TestingHost\OrleansConfigurationForTesting.xml" Link="OrleansConfigurationForTesting.xml">
+    <Content Include="$(SourceRoot)src\Orleans.TestingHost\OrleansConfigurationForTesting.xml" Link="OrleansConfigurationForTesting.xml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="TesterInternal.xunit.runner.json">

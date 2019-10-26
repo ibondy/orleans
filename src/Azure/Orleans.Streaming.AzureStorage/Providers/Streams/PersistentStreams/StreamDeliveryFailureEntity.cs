@@ -1,5 +1,5 @@
 using System;
-using Microsoft.WindowsAzure.Storage.Table;
+using Microsoft.Azure.Cosmos.Table;
 using Orleans.Serialization;
 using Orleans.Streams;
 
@@ -11,7 +11,7 @@ namespace Orleans.Providers.Streams.PersistentStreams
     public class StreamDeliveryFailureEntity : TableEntity
     {
         /// <summary>
-        /// Id of the subscription on which this delivery failure occured.
+        /// Id of the subscription on which this delivery failure occurred.
         /// </summary>
         public Guid SubscriptionId { get; set; }
 
@@ -21,12 +21,12 @@ namespace Orleans.Providers.Streams.PersistentStreams
         public string StreamProviderName { get; set; }
 
         /// <summary>
-        /// Guid Id of the stream on which the failure occured.
+        /// Guid Id of the stream on which the failure occurred.
         /// </summary>
         public Guid StreamGuid { get; set; }
 
         /// <summary>
-        /// Namespace of the stream on which the failure occured.
+        /// Namespace of the stream on which the failure occurred.
         /// </summary>
         public string StreamNamespace { get; set; }
 
@@ -83,7 +83,7 @@ namespace Orleans.Providers.Streams.PersistentStreams
         /// </summary>
         /// <remarks>
         /// This is useful for ordering the most recent failures at the start of the partition.  While useful
-        ///  for efficient table storage queries, under heavy failure load this may cause a hot spot in the 
+        ///  for efficient table storage queries, under heavy failure load this may cause a hot spot in the
         ///  table. This is not an expected occurrence, but if it happens, we recommend subdividing your row
         ///  key with some other field (stream namespace?).
         /// </remarks>

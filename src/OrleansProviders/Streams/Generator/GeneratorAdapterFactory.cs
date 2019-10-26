@@ -111,7 +111,7 @@ namespace Orleans.Providers.Streams.Generator
             generatorConfig = this.serviceProvider.GetServiceByName<IStreamGeneratorConfig>(this.Name);
             if(generatorConfig == null)
             {
-                this.logger.LogInformation("No generator configuration found for stream provider {0}.  Inactive until provided with configuration by command.", this.Name);
+                this.logger.LogInformation("No generator configuration found for stream provider {StreamProvider}.  Inactive until provided with configuration by command.", this.Name);
             }
         }
 
@@ -181,7 +181,7 @@ namespace Orleans.Providers.Streams.Generator
         }
 
         /// <summary>
-        /// Creates a quere receiver for the specificed queueId
+        /// Creates a queue receiver for the specified queueId
         /// </summary>
         /// <param name="queueId"></param>
         /// <returns></returns>
@@ -243,7 +243,7 @@ namespace Orleans.Providers.Streams.Generator
                 var watch = Stopwatch.StartNew();
                 await Task.Delay(random.Next(1,MaxDelayMs));
                 List<IBatchContainer> batches;
-                if (QueueGenerator == null || !QueueGenerator.TryReadEvents(DateTime.UtcNow, out batches))
+                if (QueueGenerator == null || !QueueGenerator.TryReadEvents(DateTime.UtcNow, maxCount, out batches))
                 {
                     return new List<IBatchContainer>();
                 }

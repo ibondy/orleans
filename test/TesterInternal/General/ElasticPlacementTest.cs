@@ -4,6 +4,7 @@ using System.Linq;
 using System.Net;
 using System.Text;
 using System.Threading.Tasks;
+using Orleans.Configuration;
 using Orleans.Hosting;
 using Orleans.Runtime;
 using Orleans.Runtime.Configuration;
@@ -23,10 +24,6 @@ namespace UnitTests.General
 
         protected override void ConfigureTestCluster(TestClusterBuilder builder)
         {
-            builder.ConfigureLegacyConfiguration(legacy =>
-            {
-                legacy.ClusterConfiguration.ApplyToAllNodes(nodeConfig => nodeConfig.LoadSheddingEnabled = true);
-            });
             builder.AddSiloBuilderConfigurator<SiloConfigurator>();
         }
 
@@ -35,7 +32,8 @@ namespace UnitTests.General
             public void Configure(ISiloHostBuilder hostBuilder)
             {
                 hostBuilder.AddMemoryGrainStorage("MemoryStore")
-                    .AddMemoryGrainStorageAsDefault();
+                    .AddMemoryGrainStorageAsDefault()
+                    .Configure<LoadSheddingOptions>(options => options.LoadSheddingEnabled = true);
             }
         }
 
@@ -100,7 +98,7 @@ namespace UnitTests.General
         [SkippableFact(Skip = "https://github.com/dotnet/orleans/issues/4008"), TestCategory("Functional")]
         public async Task ElasticityTest_StoppingSilos()
         {
-            List<SiloHandle> runtimes = await this.HostedCluster.StartAdditionalSilos(2);
+            List<SiloHandle> runtimes = await this.HostedCluster.StartAdditionalSilosAsync(2);
             await this.HostedCluster.WaitForLivenessToStabilizeAsync();
             int stopLeavy = leavy;
 
@@ -118,7 +116,7 @@ namespace UnitTests.General
             AssertIsInRange(activationCounts[runtimes[0]], perSilo, stopLeavy);
             AssertIsInRange(activationCounts[runtimes[1]], perSilo, stopLeavy);
 
-            this.HostedCluster.StopSilo(runtimes[0]);
+            await this.HostedCluster.StopSiloAsync(runtimes[0]);
             await this.HostedCluster.WaitForLivenessToStabilizeAsync();
             await InvokeAllGrains();
 

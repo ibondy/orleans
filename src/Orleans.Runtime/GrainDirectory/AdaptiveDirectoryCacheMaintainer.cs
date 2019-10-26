@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using Microsoft.Extensions.Logging;
 using Orleans.Runtime.Scheduler;
@@ -8,13 +9,12 @@ using Orleans.Runtime.Scheduler;
 
 namespace Orleans.Runtime.GrainDirectory
 {
-    internal class AdaptiveDirectoryCacheMaintainer<TValue> : AsynchAgent
+    internal class AdaptiveDirectoryCacheMaintainer : DedicatedAsynchAgent
     {
         private static readonly TimeSpan SLEEP_TIME_BETWEEN_REFRESHES = Debugger.IsAttached ? TimeSpan.FromMinutes(5) : TimeSpan.FromMinutes(1); // this should be something like minTTL/4
 
-        private readonly AdaptiveGrainDirectoryCache<TValue> cache;
+        private readonly AdaptiveGrainDirectoryCache cache;
         private readonly LocalGrainDirectory router;
-        private readonly Func<List<ActivationAddress>, TValue> updateFunc;
         private readonly IInternalGrainFactory grainFactory;
 
         private long lastNumAccesses;       // for stats
@@ -22,14 +22,12 @@ namespace Orleans.Runtime.GrainDirectory
 
         internal AdaptiveDirectoryCacheMaintainer(
             LocalGrainDirectory router,
-            AdaptiveGrainDirectoryCache<TValue> cache,
-            Func<List<ActivationAddress>, TValue> updateFunc,
+            AdaptiveGrainDirectoryCache cache,
             IInternalGrainFactory grainFactory,
             ExecutorService executorService,
             ILoggerFactory loggerFactory)
             :base(executorService, loggerFactory)
         {
-            this.updateFunc = updateFunc;
             this.grainFactory = grainFactory;
             this.router = router;
             this.cache = cache;
@@ -70,7 +68,7 @@ namespace Orleans.Runtime.GrainDirectory
                     GrainId grain = pair.Key;
                     var entry = pair.Value;
 
-                    SiloAddress owner = router.CalculateTargetSilo(grain);
+                    SiloAddress owner = router.CalculateGrainDirectoryPartition(grain);
                     if (owner == null) // Null means there's no other silo and we're shutting down, so skip this entry
                     {
                         continue;
@@ -80,7 +78,7 @@ namespace Orleans.Runtime.GrainDirectory
                     {
                         // we found our owned entry in the cache -- it is not supposed to happen unless there were 
                         // changes in the membership
-                        Log.Warn(ErrorCode.Runtime_Error_100185, "Grain {0} owned by {1} was found in the cache of {1}", grain, owner, owner);
+                        Log.Warn(ErrorCode.Runtime_Error_100185, "Grain {grain} owned by {owner} was found in the cache of {owner}", grain, owner, owner);
                         cache.Remove(grain);
                         cnt1++;                             // for debug
                     }
@@ -166,7 +164,7 @@ namespace Orleans.Runtime.GrainDirectory
                 if (tuple.Item3 != null)
                 {
                     // the server returned an updated entry
-                    var updated = updateFunc(tuple.Item3);
+                    var updated = tuple.Item3.Select(a => Tuple.Create(a.Silo, a.Activation)).ToList().AsReadOnly();
                     cache.AddOrUpdate(tuple.Item1, updated, tuple.Item2);
                     cnt1++;
                 }
@@ -206,7 +204,7 @@ namespace Orleans.Runtime.GrainDirectory
             foreach (GrainId grain in grains)
             {
                 // NOTE: should this be done with TryGet? Won't Get invoke the LRU getter function?
-                AdaptiveGrainDirectoryCache<TValue>.GrainDirectoryCacheEntry entry = cache.Get(grain);
+                AdaptiveGrainDirectoryCache.GrainDirectoryCacheEntry entry = cache.Get(grain);
 
                 if (entry != null)
                 {
@@ -216,7 +214,7 @@ namespace Orleans.Runtime.GrainDirectory
                 {
                     // this may happen only if the LRU cache is full and decided to drop this grain
                     // while we try to refresh it
-                    Log.Warn(ErrorCode.Runtime_Error_100199, "Grain {0} disappeared from the cache during maintainance", grain);
+                    Log.Warn(ErrorCode.Runtime_Error_100199, "Grain {0} disappeared from the cache during maintenance", grain);
                 }
             }
 

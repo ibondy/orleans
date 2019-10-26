@@ -32,8 +32,6 @@ namespace Orleans.Runtime.Scheduler
             if (logger.IsEnabled(LogLevel.Debug)) logger.Debug("Created {0} with SchedulingContext={1}", this, workerGroup.SchedulingContext);
         }
 
-        #region TaskScheduler methods
-
         /// <summary>Gets an enumerable of the tasks currently scheduled on this scheduler.</summary>
         /// <returns>An enumerable of the tasks currently scheduled.</returns>
         protected override IEnumerable<Task> GetScheduledTasks()
@@ -43,7 +41,7 @@ namespace Orleans.Runtime.Scheduler
 
         public void RunTask(Task task)
         {
-            RuntimeContext.SetExecutionContext(workerGroup.SchedulingContext, this);
+            RuntimeContext.SetExecutionContext(workerGroup.SchedulingContext);
             bool done = TryExecuteTask(task);
             if (!done)
                 logger.Warn(ErrorCode.SchedulerTaskExecuteIncomplete4, "RunTask: Incomplete base.TryExecuteTask for Task Id={0} with Status={1}",
@@ -81,11 +79,8 @@ namespace Orleans.Runtime.Scheduler
         /// <param name="taskWasPreviouslyQueued">A Boolean denoting whether or not task has previously been queued. If this parameter is True, then the task may have been previously queued (scheduled); if False, then the task is known not to have been queued, and this call is being made in order to execute the task inline without queuing it.</param>
         protected override bool TryExecuteTaskInline(Task task, bool taskWasPreviouslyQueued)
         {
-            bool canExecuteInline = WorkerPoolThread.CurrentWorkerThread != null;
-
             RuntimeContext ctx = RuntimeContext.Current;
-            bool canExecuteInline2 = canExecuteInline && ctx != null && object.Equals(ctx.ActivationContext, workerGroup.SchedulingContext);
-            canExecuteInline = canExecuteInline2;
+            bool canExecuteInline = ctx != null && object.Equals(ctx.ActivationContext, workerGroup.SchedulingContext);
 
 #if DEBUG
             if (logger.IsEnabled(LogLevel.Trace))
@@ -127,8 +122,6 @@ namespace Orleans.Runtime.Scheduler
 #endif
             return done;
         }
-
-        #endregion TaskScheduler methods
 
         public override string ToString()
         {

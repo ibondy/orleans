@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Orleans.CodeGeneration;
 using Orleans.Runtime.Scheduler;
 using Microsoft.Extensions.Logging;
+using Orleans.Internal;
 
 namespace Orleans.Runtime.ReminderService
 {
@@ -46,8 +47,6 @@ namespace Orleans.Runtime.ReminderService
             startedTask = new TaskCompletionSource<bool>();
             this.logger = this.loggerFactory.CreateLogger<LocalReminderService>();
         }
-
-        #region Public methods
 
         /// <summary>
         /// Attempt to retrieve reminders, that are my responsibility, from the global reminder table when starting this silo (reminder service instance)
@@ -163,8 +162,6 @@ namespace Orleans.Runtime.ReminderService
             return tableData.Reminders.Select(entry => entry.ToIGrainReminder()).ToList();
         }
 
-        #endregion
-
         /// <summary>
         /// Attempt to retrieve reminders from the global reminder table
         /// </summary>
@@ -202,7 +199,6 @@ namespace Orleans.Runtime.ReminderService
             if (logger.IsEnabled(LogLevel.Information) && remindersOutOfRange.Length > 0) logger.Info($"Removed {remindersOutOfRange.Length} local reminders that are now out of my range.");
         }
 
-        #region Change in membership, e.g., failure of predecessor
         public override async Task OnRangeChange(IRingRange oldRange, IRingRange newRange, bool increased)
         {
             await base.OnRangeChange(oldRange, newRange, increased);
@@ -211,9 +207,6 @@ namespace Orleans.Runtime.ReminderService
             else
                 if (logger.IsEnabled(LogLevel.Debug)) logger.Debug("Ignoring range change until ReminderService is Started -- Current status = {0}", Status);
         }
-        #endregion
-
-        #region Internal implementation methods
 
         protected override async Task StartInBackground()
         {
@@ -401,7 +394,7 @@ namespace Orleans.Runtime.ReminderService
             LocalReminderData prevReminder;
             if (localReminders.TryGetValue(key, out prevReminder)) // if found locally
             {
-                if (logger.IsEnabled(LogLevel.Debug)) logger.Debug(ErrorCode.RS_LocalStop, "Localy stopping reminder {0} as it is different than newly registered reminder {1}", prevReminder, entry);
+                if (logger.IsEnabled(LogLevel.Debug)) logger.Debug(ErrorCode.RS_LocalStop, "Locally stopping reminder {0} as it is different than newly registered reminder {1}", prevReminder, entry);
                 prevReminder.StopReminder(logger);
                 localReminders.Remove(prevReminder.Identity);
             }
@@ -429,8 +422,6 @@ namespace Orleans.Runtime.ReminderService
             return true;
         }
 
-        #endregion
-
         /// <summary>
         /// Local timer expired ... notify it as a 'tick' to the grain who registered this reminder
         /// </summary>
@@ -446,8 +437,6 @@ namespace Orleans.Runtime.ReminderService
             ticksDeliveredStat.Increment();
             await reminder.OnTimerTick(tardinessStat, logger);
         }
-
-        #region Utility (less useful) methods
 
         private async Task DoResponsibilitySanityCheck(GrainReference grainRef, string debugInfo)
         {
@@ -502,8 +491,6 @@ namespace Orleans.Runtime.ReminderService
             logger.Trace(str);
         }
 
-        #endregion
-        
         private static GrainId GetGrainId()
         {
             var typeCode = GrainInterfaceUtils.GetGrainClassTypeCode(typeof(IReminderService));
@@ -540,7 +527,7 @@ namespace Orleans.Runtime.ReminderService
                 StopReminder(Logger); // just to make sure.
                 var dueTimeSpan = CalculateDueTime();
                 Timer = GrainTimer.FromTaskCallback(scheduler, this.timerLogger, asyncCallback, this, dueTimeSpan, period, name: ReminderName);
-                if (Logger.IsEnabled(LogLevel.Debug)) Logger.Debug("Reminder {0}, Due time{1}", this, dueTimeSpan);
+                if (Logger.IsEnabled(LogLevel.Debug)) Logger.Debug("Reminder {0}, Due time: {1}", this, dueTimeSpan);
                 Timer.Start();
             }
 

@@ -1,8 +1,9 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using Orleans.Internal;
 using Orleans.MultiCluster;
 using Orleans.Runtime.Configuration;
 
@@ -45,8 +46,6 @@ namespace Orleans.Runtime.MultiClusterNetwork
         }
 
 
-        #region IGossipChannel
-
         public async Task Publish(IMultiClusterGossipData data)
         {
             logger.Debug("-Publish data:{0}", data);
@@ -60,7 +59,7 @@ namespace Orleans.Runtime.MultiClusterNetwork
                     var configInStorage = await tableManager.ReadConfigurationEntryAsync();
                     await DiffAndWriteBackConfigAsync(data.Configuration, configInStorage);
                 };
-                tasks.Add(publishconfig());    
+                tasks.Add(publishconfig());
             }
             foreach (var gateway in data.Gateways.Values)
             {
@@ -126,8 +125,6 @@ namespace Orleans.Runtime.MultiClusterNetwork
                 throw e;
             }
         }
-
-        #endregion
 
 
         // compare config with configInStorage, and

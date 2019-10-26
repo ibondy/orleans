@@ -1,13 +1,14 @@
 using System;
 using System.Collections.Generic;
-using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
-using Microsoft.WindowsAzure.Storage.Queue;
-using Microsoft.WindowsAzure.Storage.RetryPolicies;
-using Orleans.Runtime;
-using Orleans.AzureUtils.Utilities;
 using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.Azure.Storage.Queue;
+using Microsoft.Azure.Storage.RetryPolicies;
+using Microsoft.Extensions.Logging;
+using Orleans.AzureUtils.Utilities;
+using Orleans.Runtime;
 using Orleans.Streaming.AzureStorage;
+using Orleans.Internal;
 
 namespace Orleans.AzureUtils
 {
@@ -21,7 +22,7 @@ namespace Orleans.AzureUtils
     /// http://blogs.msdn.com/b/windowsazurestorage/archive/tags/scalability/
     /// http://blogs.msdn.com/b/windowsazurestorage/archive/2010/12/30/windows-azure-storage-architecture-overview.aspx
     /// http://blogs.msdn.com/b/windowsazurestorage/archive/2010/11/06/how-to-get-most-out-of-windows-azure-tables.aspx
-    /// 
+    ///
     /// </summary>
     internal static class AzureQueueDefaultPolicies
     {
@@ -71,30 +72,6 @@ namespace Orleans.AzureUtils
 
             logger = loggerFactory.CreateLogger<AzureQueueDataManager>();
             QueueName = queueName;
-            connectionString = storageConnectionString;
-            messageVisibilityTimeout = visibilityTimeout;
-
-            queueOperationsClient = GetCloudQueueClient(
-                connectionString,
-                AzureQueueDefaultPolicies.QueueOperationRetryPolicy,
-                AzureQueueDefaultPolicies.QueueOperationTimeout,
-                logger);
-        }
-
-        /// <summary>
-        /// Constructor.
-        /// </summary>
-        /// <param name="queueName">Name of the queue to be connected to.</param>
-        /// <param name="serviceId">The service id of the silo. It will be concatenated to the queueName.</param>
-        /// <param name="storageConnectionString">Connection string for the Azure storage account used to host this table.</param>
-        /// <param name="visibilityTimeout">A TimeSpan specifying the visibility timeout interval</param>
-        /// <param name="loggerFactory">logger factory used to create loggers</param>
-        public AzureQueueDataManager(ILoggerFactory loggerFactory, string queueName, string serviceId, string storageConnectionString, TimeSpan? visibilityTimeout = null)
-        {
-            logger = loggerFactory.CreateLogger<AzureQueueDataManager>();
-            QueueName = serviceId + "-" + queueName;
-            QueueName = SanitizeQueueName(QueueName);
-            ValidateQueueName(QueueName);
             connectionString = storageConnectionString;
             messageVisibilityTimeout = visibilityTimeout;
 
@@ -206,7 +183,7 @@ namespace Orleans.AzureUtils
         }
 
         /// <summary>
-        /// Peeks in the queue for latest message, without dequeueing it.
+        /// Peeks in the queue for latest message, without dequeuing it.
         /// </summary>
         public async Task<CloudQueueMessage> PeekQueueMessage()
         {
@@ -346,7 +323,7 @@ namespace Orleans.AzureUtils
         private void ReportErrorAndRethrow(Exception exc, string operation, AzureQueueErrorCode errorCode)
         {
             var errMsg = String.Format(
-                "Error doing {0} for Azure storage queue {1} " + Environment.NewLine 
+                "Error doing {0} for Azure storage queue {1} " + Environment.NewLine
                 + "Exception = {2}", operation, QueueName, exc);
             logger.Error((int)errorCode, errMsg, exc);
             throw new AggregateException(errMsg, exc);
@@ -360,7 +337,7 @@ namespace Orleans.AzureUtils
         {
             try
             {
-                var storageAccount = AzureStorageUtils.GetCloudStorageAccount(storageConnectionString);
+                var storageAccount = AzureQueueUtils.GetCloudStorageAccount(storageConnectionString);
                 CloudQueueClient operationsClient = storageAccount.CreateCloudQueueClient();
                 operationsClient.DefaultRequestOptions.RetryPolicy = retryPolicy;
                 operationsClient.DefaultRequestOptions.ServerTimeout = timeout;
@@ -386,6 +363,7 @@ namespace Orleans.AzureUtils
                 .Replace('&', '-')
                 .Replace('+', '-')
                 .Replace(':', '-')
+                .Replace('.', '-')
                 .Replace('%', '-');
             return tmp;
         }
@@ -431,4 +409,3 @@ namespace Orleans.AzureUtils
         }
     }
 }
-

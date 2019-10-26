@@ -8,11 +8,12 @@ using Orleans;
 using Orleans.GrainDirectory;
 using Orleans.Runtime;
 using TestGrainInterfaces;
-using Orleans.Runtime.Configuration;
+using Orleans.Internal;
 using Orleans.TestingHost;
 using Xunit;
 using Xunit.Abstractions;
-using Tester;
+using Orleans.Hosting;
+using Orleans.Configuration;
 
 // ReSharper disable InconsistentNaming
 
@@ -56,14 +57,12 @@ namespace Tests.GeoClusterTests
         }
 
 
-        #region client wrappers
-
         public class ClientWrapper : ClientWrapperBase
         {
-            public static readonly Func<string, int, string, Action<ClientConfiguration>, Action<IClientBuilder>, ClientWrapper> Factory =
-                (name, gwPort, clusterId, configUpdater, clientConfgirator) => new ClientWrapper(name, gwPort, clusterId, configUpdater, clientConfgirator);
+            public static readonly Func<string, int, string, Action<IClientBuilder>, ClientWrapper> Factory =
+                (name, gwPort, clusterId, clientConfgirator) => new ClientWrapper(name, gwPort, clusterId, clientConfgirator);
 
-            public ClientWrapper(string name, int gatewayport, string clusterId, Action<ClientConfiguration> customizer, Action<IClientBuilder> clientConfigurator) : base(name, gatewayport, clusterId, customizer, clientConfigurator)
+            public ClientWrapper(string name, int gatewayport, string clusterId, Action<IClientBuilder> clientConfigurator) : base(name, gatewayport, clusterId, clientConfigurator)
             {
                 this.systemManagement = this.GrainFactory.GetGrain<IManagementGrain>(0);
             }
@@ -76,15 +75,13 @@ namespace Tests.GeoClusterTests
                 return toWait.GetResult();
             }
 
-            public void InjectMultiClusterConf(params string[] args)
+            public void InjectMultiClusterConf(string[] clusters, string comment = "", bool checkForLaggingSilos = true)
             {
-                systemManagement.InjectMultiClusterConfiguration(args).GetResult();
+                systemManagement.InjectMultiClusterConfiguration(clusters, comment, checkForLaggingSilos).GetResult();
             }
 
             IManagementGrain systemManagement;
         }
-
-        #endregion
 
         private Random random = new Random();
 
@@ -93,24 +90,26 @@ namespace Tests.GeoClusterTests
         private string cluster1;
         private ClientWrapper[] clients;
 
+        public class SiloConfigurator : ISiloBuilderConfigurator
+        {
+            public void Configure(ISiloHostBuilder hostBuilder)
+            {
+                hostBuilder.Configure<MultiClusterOptions>(options => options.GlobalSingleInstanceRetryInterval = TimeSpan.FromSeconds(5));
+            }
+        }
+
         private async Task Setup_Clusters(bool largesetup)
         {
             await RunWithTimeout("Setup_Clusters", largesetup ? 120000 : 60000, async () =>
             {
                 // use a random global service id for testing purposes
                 var globalserviceid = Guid.NewGuid();
-
-                Action<ClusterConfiguration> configurationcustomizer = (ClusterConfiguration c) =>
-                {
-                    // run the retry process every 5 seconds to keep this test shorter
-                    c.Globals.GlobalSingleInstanceRetryInterval = TimeSpan.FromSeconds(5);
-                };
-
+                
                 // Create two clusters, each with a single silo.
                 cluster0 = "cluster0";
                 cluster1 = "cluster1";
-                NewGeoCluster(globalserviceid, cluster0, (short)(largesetup ? 3 : 1), configurationcustomizer);
-                NewGeoCluster(globalserviceid, cluster1, (short)(largesetup ? 4 : 1), configurationcustomizer);
+                NewGeoCluster<SiloConfigurator>(globalserviceid, cluster0, (short)(largesetup ? 3 : 1));
+                NewGeoCluster<SiloConfigurator>(globalserviceid, cluster1, (short)(largesetup ? 4 : 1));
 
                 if (!largesetup)
                 {
@@ -134,13 +133,11 @@ namespace Tests.GeoClusterTests
                 await WaitForLivenessToStabilizeAsync();
 
                 // Configure multicluster
-                clients[0].InjectMultiClusterConf(cluster0, cluster1);
+                clients[0].InjectMultiClusterConf(new string[] { cluster0, cluster1 });
                 await WaitForMultiClusterGossipToStabilizeAsync(false);
             });
         }
 
-
-        #region Test creation of independent grains
 
         private Task IndependentCreation()
         {
@@ -187,10 +184,6 @@ namespace Tests.GeoClusterTests
 
             return Task.CompletedTask;
         }
-
-        #endregion
-
-        #region Creation Race
 
         // This test is for the case where two different clusters are racing, 
         // trying to activate the same grain.   
@@ -349,10 +342,6 @@ namespace Tests.GeoClusterTests
             }
         }
 
-        #endregion Creation Race
-
-        #region Conflict Resolution
-
         // This test is used to test the case where two different clusters are racing, 
         // trying to activate the same grain, but inter-cluster communication is blocked
         // so they both activate an instance
@@ -505,9 +494,6 @@ namespace Tests.GeoClusterTests
             }
 
         }
-        #endregion
-
-        #region Helper methods 
 
         private List<GrainId> GetGrainsInClusterWithStatus(string clusterId, GrainDirectoryEntryStatus? status = null)
         {
@@ -675,5 +661,4 @@ namespace Tests.GeoClusterTests
 
 
     }
-    #endregion
 }

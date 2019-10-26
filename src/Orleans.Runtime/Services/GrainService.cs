@@ -3,7 +3,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Orleans.Core;
-using Orleans.Runtime.Configuration;
 using Orleans.Runtime.ConsistentRing;
 using Orleans.Runtime.Scheduler;
 using Orleans.Services;
@@ -36,7 +35,11 @@ namespace Orleans.Runtime
             }
         }
 
-        /// <summary>Only to make Reflection happy</summary>
+        public GrainReference GetGrainReference() => GrainReference.FromGrainId(((ISystemTargetBase)this).GrainId, ((ISystemTargetBase)this).GrainReferenceRuntime, null, this.Silo);
+
+        /// <summary>Only to make Reflection happy. Do not use it in your implementation</summary>
+        [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+        [System.Diagnostics.DebuggerHidden]
         protected GrainService() : base(null, null, null)
         {
             throw new Exception("This should not be constructed by client code.");
@@ -108,7 +111,7 @@ namespace Orleans.Runtime
             scheduler.QueueTask(() => OnRangeChange(oldRange, newRange, increased), this.SchedulingContext).Ignore();
         }
 
-        /// <summary>Invoked when the ring range owned by the service instance changes because of a change in the clsuter state</summary>
+        /// <summary>Invoked when the ring range owned by the service instance changes because of a change in the cluster state</summary>
         public virtual Task OnRangeChange(IRingRange oldRange, IRingRange newRange, bool increased)
         {
             Logger.Info(ErrorCode.RS_RangeChanged, "My range changed from {0} to {1} increased = {2}", oldRange, newRange, increased);

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Orleans.Configuration.Internal;
 using System.Linq;
 
 namespace Orleans.Configuration
@@ -39,7 +40,7 @@ namespace Orleans.Configuration
         }
 
         /// <summary>
-        /// Configure a option formatter for option TOptions if none is configured
+        /// Configure an option formatter for option TOptions if none is configured
         /// </summary>
         /// <typeparam name="TOptions"></typeparam>
         /// <typeparam name="TOptionFormatter"></typeparam>

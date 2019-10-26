@@ -2,7 +2,6 @@ using System;
 using System.Linq;
 using System.Threading.Tasks;
 using Orleans;
-using Orleans.Configuration;
 using Orleans.Hosting;
 using Orleans.Providers.Streams.Common;
 using Orleans.Runtime;
@@ -31,10 +30,14 @@ namespace UnitTests.StreamingTests
                 public void Configure(ISiloHostBuilder hostBuilder)
                 {
                     hostBuilder
-                        .AddPersistentStreams(StreamProviderName,
-                            ControllableTestAdapterFactory.Create, b=>b
-                         .ConfigureStreamPubSub(StreamPubSubType.ImplicitOnly)
-                         .UseDynamicClusterConfigDeploymentBalancer());
+                        .AddPersistentStreams(
+                            StreamProviderName,
+                            ControllableTestAdapterFactory.Create,
+                            b=>
+                            {
+                                b.ConfigureStreamPubSub(StreamPubSubType.ImplicitOnly);
+                                b.UseDynamicClusterConfigDeploymentBalancer();
+                            });
                 }
             }
         }

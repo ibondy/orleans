@@ -3,9 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
+using Microsoft.Azure.Cosmos.Table;
 using Microsoft.Extensions.Logging;
-using Microsoft.WindowsAzure.Storage;
-using Microsoft.WindowsAzure.Storage.Table;
+using Orleans.Internal;
 using Orleans.Runtime;
 using LogLevel = Microsoft.Extensions.Logging.LogLevel;
 
@@ -25,6 +25,8 @@ namespace Orleans.Streaming.AzureStorage
 namespace Orleans.Streaming.EventHubs
 #elif TESTER_AZUREUTILS
 namespace Orleans.Tests.AzureUtils
+#elif ORLEANS_TRANSACTIONS
+namespace Orleans.Transactions.AzureStorage
 #else
 // No default namespace intentionally to cause compile errors if something is not defined
 #endif
@@ -32,11 +34,8 @@ namespace Orleans.Tests.AzureUtils
     /// <summary>
     /// Utility class to encapsulate row-based access to Azure table storage.
     /// </summary>
-    /// <remarks>
-    /// These functions are mostly intended for internal usage by Orleans runtime, but due to certain assembly packaging constrants this class needs to have public visibility.
-    /// </remarks>
     /// <typeparam name="T">Table data entry used by this table / manager.</typeparam>
-    public class AzureTableDataManager<T> where T : class, ITableEntity, new()
+    internal class AzureTableDataManager<T> where T : class, ITableEntity, new()
     {
         /// <summary> Name of the table this instance is managing. </summary>
         public string TableName { get; private set; }
@@ -49,7 +48,7 @@ namespace Orleans.Tests.AzureUtils
 
         private CloudTable tableReference;
 
-        private readonly CounterStatistic numServerBusy = CounterStatistic.FindOrCreate(StatisticNames.AZURE_SERVER_BUSY, true);
+        public CloudTable Table => tableReference;
 
         /// <summary>
         /// Constructor
@@ -63,7 +62,7 @@ namespace Orleans.Tests.AzureUtils
             TableName = tableName;
             ConnectionString = storageConnectionString;
 
-            AzureStorageUtils.ValidateTableName(tableName);
+            AzureTableUtils.ValidateTableName(tableName);
         }
 
         /// <summary>
@@ -183,7 +182,7 @@ namespace Orleans.Tests.AzureUtils
         }
 
         /// <summary>
-        /// Inserts a data entry in the Azure table: creates a new one if does not exists or overwrites (without eTag) an already existing version (the "update in place" semantincs).
+        /// Inserts a data entry in the Azure table: creates a new one if does not exists or overwrites (without eTag) an already existing version (the "update in place" semantics).
         /// </summary>
         /// <param name="data">Data to be inserted or replaced in the table.</param>
         /// <returns>Value promise with new Etag for this data entry after completing this storage operation.</returns>
@@ -351,7 +350,7 @@ namespace Orleans.Tests.AzureUtils
                 }
                 catch (StorageException exception)
                 {
-                    if (!AzureStorageUtils.TableStorageDataNotFound(exception))
+                    if (!AzureTableUtils.TableStorageDataNotFound(exception))
                         throw;
                 }
                 //The ETag of data is needed in further operations.
@@ -476,15 +475,18 @@ namespace Orleans.Tests.AzureUtils
                         return list;
                     };
 
+#if !ORLEANS_TRANSACTIONS
                     IBackoffProvider backoff = new FixedBackoff(AzureTableDefaultPolicies.PauseBetweenTableOperationRetries);
 
                     List<T> results = await AsyncExecutorWithRetries.ExecuteWithRetries(
                         counter => executeQueryHandleContinuations(),
                         AzureTableDefaultPolicies.MaxTableOperationRetries,
-                        (exc, counter) => AzureStorageUtils.AnalyzeReadException(exc.GetBaseException(), counter, TableName, Logger),
+                        (exc, counter) => AzureTableUtils.AnalyzeReadException(exc.GetBaseException(), counter, TableName, Logger),
                         AzureTableDefaultPolicies.TableOperationTimeout,
                         backoff);
-
+#else
+                    List<T> results = await executeQueryHandleContinuations();
+#endif
                     // Data was read successfully if we got to here
                     return results.Select(i => Tuple.Create(i, i.ETag)).ToList();
 
@@ -493,7 +495,7 @@ namespace Orleans.Tests.AzureUtils
                 {
                     // Out of retries...
                     var errorMsg = $"Failed to read Azure storage table {TableName}: {exc.Message}";
-                    if (!AzureStorageUtils.TableStorageDataNotFound(exc))
+                    if (!AzureTableUtils.TableStorageDataNotFound(exc))
                     {
                         Logger.Warn((int)Utilities.ErrorCode.AzureTable_09, errorMsg, exc);
                     }
@@ -562,8 +564,6 @@ namespace Orleans.Tests.AzureUtils
                 CheckAlertSlowAccess(startTime, operation);
             }
         }
-
-#region Internal functions
 
         internal async Task<Tuple<string, string>> InsertTwoTableEntriesConditionallyAsync(T data1, T data2, string data2Etag)
         {
@@ -668,7 +668,7 @@ namespace Orleans.Tests.AzureUtils
         {
             try
             {
-                CloudStorageAccount storageAccount = AzureStorageUtils.GetCloudStorageAccount(ConnectionString);
+                CloudStorageAccount storageAccount = AzureTableUtils.GetCloudStorageAccount(ConnectionString);
                 CloudTableClient operationsClient = storageAccount.CreateCloudTableClient();
                 operationsClient.DefaultRequestOptions.RetryPolicy = AzureTableDefaultPolicies.TableOperationRetryPolicy;
                 operationsClient.DefaultRequestOptions.ServerTimeout = AzureTableDefaultPolicies.TableOperationTimeout;
@@ -687,7 +687,7 @@ namespace Orleans.Tests.AzureUtils
         {
             try
             {
-                CloudStorageAccount storageAccount = AzureStorageUtils.GetCloudStorageAccount(ConnectionString);
+                CloudStorageAccount storageAccount = AzureTableUtils.GetCloudStorageAccount(ConnectionString);
                 CloudTableClient creationClient = storageAccount.CreateCloudTableClient();
                 creationClient.DefaultRequestOptions.RetryPolicy = AzureTableDefaultPolicies.TableCreationRetryPolicy;
                 creationClient.DefaultRequestOptions.ServerTimeout = AzureTableDefaultPolicies.TableCreationTimeout;
@@ -706,7 +706,7 @@ namespace Orleans.Tests.AzureUtils
         {
             HttpStatusCode httpStatusCode;
             string restStatus;
-            if(AzureStorageUtils.EvaluateException(exc, out httpStatusCode, out restStatus) && AzureStorageUtils.IsContentionError(httpStatusCode))
+            if (AzureTableUtils.EvaluateException(exc, out httpStatusCode, out restStatus) && AzureTableUtils.IsContentionError(httpStatusCode))
             {
                 // log at Verbose, since failure on conditional is not not an error. Will analyze and warn later, if required.
                 if(Logger.IsEnabled(LogLevel.Debug)) Logger.Debug((int)Utilities.ErrorCode.AzureTable_13,
@@ -728,8 +728,6 @@ namespace Orleans.Tests.AzureUtils
                 Logger.Warn((int)Utilities.ErrorCode.AzureTable_15, "Slow access to Azure Table {0} for {1}, which took {2}.", TableName, operation, timeSpan);
             }
         }
-
-        #endregion
 
         /// <summary>
         /// Helper functions for building table queries.

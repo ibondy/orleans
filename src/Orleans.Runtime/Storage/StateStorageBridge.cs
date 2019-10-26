@@ -19,8 +19,17 @@ namespace Orleans.Core
 
         public TState State
         {
-            get { return grainState.State; }
-            set { grainState.State = value; }
+            get
+            {
+                GrainRuntime.CheckRuntimeContext();
+                return grainState.State;
+            }
+
+            set
+            {
+                GrainRuntime.CheckRuntimeContext();
+                grainState.State = value;
+            }
         }
 
         public string Etag
@@ -52,6 +61,8 @@ namespace Orleans.Core
             Stopwatch sw = Stopwatch.StartNew();
             try
             {
+                GrainRuntime.CheckRuntimeContext();
+
                 await store.ReadStateAsync(name, grainRef, grainState);
 
                 StorageStatisticsGroup.OnStorageRead(name, grainRef, sw.Elapsed);
@@ -82,6 +93,8 @@ namespace Orleans.Core
             const string what = "WriteState";
             try
             {
+                GrainRuntime.CheckRuntimeContext();
+
                 Stopwatch sw = Stopwatch.StartNew();
                 await store.WriteStateAsync(name, grainRef, grainState);
                 sw.Stop();
@@ -109,6 +122,8 @@ namespace Orleans.Core
             const string what = "ClearState";
             try
             {
+                GrainRuntime.CheckRuntimeContext();
+
                 Stopwatch sw = Stopwatch.StartNew();
                 // Clear (most likely Delete) state from external storage
                 await store.ClearStateAsync(name, grainRef, grainState);

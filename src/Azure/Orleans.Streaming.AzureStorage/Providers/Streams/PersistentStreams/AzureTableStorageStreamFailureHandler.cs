@@ -1,10 +1,10 @@
 using System;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using Orleans.Persistence.AzureStorage;
 using Orleans.Runtime;
 using Orleans.Serialization;
 using Orleans.Streams;
-using Orleans.Streaming.AzureStorage;
 
 namespace Orleans.Providers.Streams.PersistentStreams
 {
@@ -52,7 +52,7 @@ namespace Orleans.Providers.Streams.PersistentStreams
         }
 
         /// <summary>
-        /// Indicates if the subscription should be put in a fauted state upon stream failures
+        /// Indicates if the subscription should be put in a faulted state upon stream failures
         /// </summary>
         public bool ShouldFaultSubsriptionOnError { get; private set; }
 

@@ -2,12 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using Microsoft.Extensions.Logging;
-
+using Orleans.Internal;
 
 namespace Orleans.Runtime
 {
 
-    internal class Watchdog : AsynchAgent
+    internal class Watchdog : DedicatedAsynchAgent
     {
         private static readonly TimeSpan heartbeatPeriod = TimeSpan.FromMilliseconds(1000);
         private readonly TimeSpan healthCheckPeriod;
@@ -36,8 +36,6 @@ namespace Orleans.Runtime
             base.Start();
         }
 
-        #region Overrides of AsynchAgent
-
         protected override void Run()
         {
             while (!Cts.IsCancellationRequested)
@@ -57,8 +55,6 @@ namespace Orleans.Runtime
                 }
             }
         }
-
-        #endregion
 
         private void WatchdogHeartbeatTick(object state)
         {

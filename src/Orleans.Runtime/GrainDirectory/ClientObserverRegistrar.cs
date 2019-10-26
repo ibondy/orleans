@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Orleans.Configuration;
+using Orleans.Internal;
 using Orleans.Runtime.GrainDirectory;
 using Orleans.Runtime.Messaging;
 using Orleans.Runtime.Scheduler;
@@ -22,10 +22,10 @@ namespace Orleans.Runtime
         private readonly OrleansTaskScheduler scheduler;
         private readonly SiloMessagingOptions messagingOptions;
         private readonly ILogger logger;
+        private IHostedClient hostedClient;
         private Gateway gateway;
         private IDisposable refreshTimer;
-
-
+        
         public ClientObserverRegistrar(
             ILocalSiloDetails siloDetails,
             ILocalGrainDirectory dir,
@@ -41,6 +41,15 @@ namespace Orleans.Runtime
             logger = loggerFactory.CreateLogger<ClientObserverRegistrar>();
         }
 
+        internal void SetHostedClient(IHostedClient client)
+        {
+            this.hostedClient = client;
+            if (client != null)
+            {
+                this.scheduler.QueueAction(Start, this.SchedulingContext).Ignore();
+            }
+        }
+
         internal void SetGateway(Gateway gateway)
         {
             this.gateway = gateway;
@@ -51,6 +60,7 @@ namespace Orleans.Runtime
 
         private void Start()
         {
+            if (this.refreshTimer != null) return;
             var random = new SafeRandom();
             var randomOffset = random.NextTimeSpan(this.messagingOptions.ClientRegistrationRefresh);
             this.refreshTimer = this.RegisterTimer(
@@ -109,11 +119,14 @@ namespace Orleans.Runtime
 
         private async Task OnClientRefreshTimer(object data)
         {
-            if (gateway == null) return;
             try
             {
-                ICollection<GrainId> clients = gateway.GetConnectedClients().ToList();
-                List<Task> tasks = new List<Task>();
+                var clients = new List<GrainId>();
+                if (this.gateway != null) clients.AddRange(gateway.GetConnectedClients());
+                var hostedClientId = this.hostedClient?.ClientId;
+                if (hostedClientId != null) clients.Add(hostedClientId);
+
+                var tasks = new List<Task>();
                 foreach (GrainId clientId in clients)
                 {
                     var addr = GetClientActivationAddress(clientId);

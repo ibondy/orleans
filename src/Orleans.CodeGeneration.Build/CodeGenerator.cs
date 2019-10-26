@@ -8,7 +8,8 @@ using Orleans.CodeGenerator;
 using Orleans.Serialization;
 using Orleans.Runtime;
 using Orleans.Metadata;
-#if NETCOREAPP2_0
+using Microsoft.Extensions.DependencyInjection;
+#if NETCOREAPP
 using System.Runtime.Loader;
 #endif
 
@@ -44,7 +45,7 @@ namespace Orleans.CodeGeneration
             // Generate source
             Console.WriteLine($"Orleans-CodeGen - Generating file {outputFileName}");
 
-#if !NETCOREAPP2_0
+#if !NETCOREAPP
             var generatedCode = GenerateCodeInAppDomain(options);
 #else
             var generatedCode = GenerateCodeInternal(options);
@@ -66,9 +67,17 @@ namespace Orleans.CodeGeneration
 
         private static string GenerateSourceForAssembly(Assembly grainAssembly, LogLevel logLevel)
         {
-            using (var loggerFactory = new LoggerFactory())
+            var serviceCollection = new ServiceCollection()
+                .AddLogging(logging =>
+                {
+                    logging
+                    .AddConsole()
+                    .SetMinimumLevel(logLevel);
+                });
+
+            using (var services = serviceCollection.BuildServiceProvider())
             {
-                loggerFactory.AddConsole(logLevel);
+                var loggerFactory = services.GetRequiredService<ILoggerFactory>();
                 var parts = new ApplicationPartManager()
                     .AddFeatureProvider(new BuiltInTypesSerializationFeaturePopulator())
                     .AddFeatureProvider(new AssemblyAttributeFeatureProvider<GrainInterfaceFeature>())
@@ -96,13 +105,13 @@ namespace Orleans.CodeGeneration
             }
         }
 
-#if !NETCOREAPP2_0
+#if !NETCOREAPP
         private static string GenerateCodeInAppDomain(CodeGenOptions options)
         {
             AppDomain appDomain = null;
             try
             {
-                var assembly = typeof(CodeGenerator).GetTypeInfo().Assembly;
+                var assembly = typeof(CodeGenerator).Assembly;
 
                 // Create AppDomain.
                 var thisAssemblyPath = new Uri(assembly.CodeBase).LocalPath;
@@ -150,7 +159,7 @@ namespace Orleans.CodeGeneration
             try
             {
                 // Set up assembly resolution.
-#if NETCOREAPP2_0
+#if NETCOREAPP
                 AssemblyLoadContext.Default.Resolving += refResolver.AssemblyLoadContextResolving;
 #else
                 AppDomain.CurrentDomain.AssemblyResolve += refResolver.ResolveAssembly;
@@ -161,7 +170,7 @@ namespace Orleans.CodeGeneration
             finally
             {
                 refResolver.Dispose();
-#if NETCOREAPP2_0
+#if NETCOREAPP
                 AssemblyLoadContext.Default.Resolving -= refResolver.AssemblyLoadContextResolving;
 #else
                 AppDomain.CurrentDomain.AssemblyResolve -= refResolver.ResolveAssembly;

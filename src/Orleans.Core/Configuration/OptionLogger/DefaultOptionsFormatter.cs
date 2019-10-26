@@ -1,10 +1,8 @@
-﻿using Microsoft.Extensions.Options;
-using Orleans.Runtime.Configuration;
+using Microsoft.Extensions.Options;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using System.Text;
 
 namespace Orleans
 {
@@ -87,28 +85,21 @@ namespace Orleans
 
             return result;
         }
-
-        private static object RedactIfNeeded(RedactAttribute attribute, object value)
-        {
-            return attribute != null
-                ? attribute.Redact(value)
-                : value;
-        }
     }
 
     internal class DefaultOptionsFormatterResolver<T> : IOptionFormatterResolver<T> 
         where T: class, new()
     {
-        private IOptionsSnapshot<T> optionsSnapshot;
+        private IOptionsMonitor<T> optionsMonitor;
 
-        public DefaultOptionsFormatterResolver(IOptionsSnapshot<T> optionsSnapshot)
+        public DefaultOptionsFormatterResolver(IOptionsMonitor<T> optionsMonitor)
         {
-            this.optionsSnapshot = optionsSnapshot;
+            this.optionsMonitor = optionsMonitor;
         }
 
         public IOptionFormatter<T> Resolve(string name)
         {
-            return new DefaultOptionsFormatter<T>(name, optionsSnapshot.Get(name));
+            return new DefaultOptionsFormatter<T>(name, this.optionsMonitor.Get(name));
         }
     }
 }

@@ -44,7 +44,7 @@ namespace DefaultCluster.Tests.General
             return this.GrainFactory.GetGrain<ISimpleObserverableGrain>(GetRandomGrainId());
         }
 
-        [Fact, TestCategory("BVT"), TestCategory("Functional")]
+        [Fact, TestCategory("BVT")]
         public async Task ObserverTest_SimpleNotification()
         {
             TestInitialize();
@@ -62,7 +62,7 @@ namespace DefaultCluster.Tests.General
             await this.GrainFactory.DeleteObjectReference<ISimpleGrainObserver>(reference);
         }
 
-        [Fact, TestCategory("BVT"), TestCategory("Functional")]
+        [Fact, TestCategory("BVT")]
         public async Task ObserverTest_SimpleNotification_GeneratedFactory()
         {
             TestInitialize();
@@ -190,7 +190,7 @@ namespace DefaultCluster.Tests.General
         }
 
 
-        [Fact, TestCategory("BVT"), TestCategory("Functional")]
+        [Fact, TestCategory("BVT")]
         public async Task ObserverTest_Unsubscribe()
         {
             TestInitialize();
@@ -215,7 +215,7 @@ namespace DefaultCluster.Tests.General
             }
         }
 
-        [Fact, TestCategory("BVT"), TestCategory("Functional")]
+        [Fact, TestCategory("BVT")]
         public async Task ObserverTest_DoubleSubscriptionDifferentReferences()
         {
             TestInitialize();
@@ -279,7 +279,7 @@ namespace DefaultCluster.Tests.General
             result.Continue = true;
         }
 
-        [Fact, TestCategory("BVT"), TestCategory("Functional")]
+        [Fact, TestCategory("BVT")]
         public async Task ObserverTest_SubscriberMustBeGrainReference()
         {
             TestInitialize();
@@ -334,15 +334,11 @@ namespace DefaultCluster.Tests.General
                 this.logger = logger;
             }
 
-            #region ISimpleGrainObserver Members
-
             public void StateChanged(int a, int b)
             {
                 this.logger.Debug("SimpleGrainObserver.StateChanged a={0} b={1}", a, b);
                 action?.Invoke(a, b, result);
             }
-
-            #endregion
         }
     }
 }

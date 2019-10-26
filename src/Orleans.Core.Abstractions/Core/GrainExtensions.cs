@@ -64,6 +64,18 @@ namespace Orleans
         }
 
         /// <summary>
+        /// Casts the provided <paramref name="grain"/> to the provided <paramref name="interfaceType"/>.
+        /// </summary>
+        /// <param name="grain">The grain.</param>
+        /// <param name="interfaceType">The resulting interface type.</param>
+        /// <returns>A reference to <paramref name="grain"/> which implements <paramref name="interfaceType"/>.</returns>
+        public static object Cast(this IAddressable grain, Type interfaceType)
+        {
+
+            return grain.AsWeaklyTypedReference().Runtime.Convert(grain, interfaceType);
+        }
+
+        /// <summary>
         /// Binds the grain reference to the provided <see cref="IGrainFactory"/>.
         /// </summary>
         /// <param name="grain">The grain reference.</param>
@@ -136,7 +148,7 @@ namespace Orleans
         /// Returns the long representation of a grain primary key.
         /// </summary>
         /// <param name="grain">The grain to find the primary key for.</param>
-        /// <param name="keyExt">The output paramater to return the extended key part of the grain primary key, if extened primary key was provided for that grain.</param>
+        /// <param name="keyExt">The output parameter to return the extended key part of the grain primary key, if extended primary key was provided for that grain.</param>
         /// <returns>A long representing the primary key for this grain.</returns>
         public static long GetPrimaryKeyLong(this IAddressable grain, out string keyExt)
         {
@@ -157,7 +169,7 @@ namespace Orleans
         /// Returns the Guid representation of a grain primary key.
         /// </summary>
         /// <param name="grain">The grain to find the primary key for.</param>
-        /// <param name="keyExt">The output paramater to return the extended key part of the grain primary key, if extened primary key was provided for that grain.</param>
+        /// <param name="keyExt">The output parameter to return the extended key part of the grain primary key, if extended primary key was provided for that grain.</param>
         /// <returns>A Guid representing the primary key for this grain.</returns>
         public static Guid GetPrimaryKey(this IAddressable grain, out string keyExt)
         {

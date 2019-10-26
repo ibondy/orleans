@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
-using Orleans.Messaging;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Orleans.Configuration;
+using Orleans.Messaging;
 
 namespace Orleans.AzureUtils
 {
@@ -24,11 +24,10 @@ namespace Orleans.AzureUtils
             this.options = options.Value;
         }
 
-        #region Implementation of IGatewayListProvider
-
         public async Task InitializeGatewayListProvider()
         {
-            siloInstanceManager = await OrleansSiloInstanceManager.GetManager(this.clusterId, this.options.ConnectionString, this.loggerFactory);
+            siloInstanceManager = await OrleansSiloInstanceManager.GetManager(
+                this.clusterId, this.options.ConnectionString, this.options.TableName, this.loggerFactory);
         }
         // no caching
         public Task<IList<Uri>> GetGateways()
@@ -46,7 +45,5 @@ namespace Orleans.AzureUtils
         {
             get { return true; }
         }
-
-        #endregion
     }
 }

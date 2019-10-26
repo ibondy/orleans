@@ -1,12 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Net;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Orleans;
 using Orleans.Hosting;
-using Orleans.Runtime.Configuration;
 using Orleans.TestingHost;
 using Tester;
 using TestExtensions;
@@ -14,7 +12,9 @@ using Xunit;
 using Xunit.Abstractions;
 using Orleans.MultiCluster;
 using Orleans.Configuration;
+using Orleans.Internal;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Tests.GeoClusterTests
 {
@@ -103,16 +103,7 @@ namespace Tests.GeoClusterTests
                 ? this.Clusters.First().Value.Cluster.WaitForLivenessToStabilizeAsync()
                 : Task.Delay(gossipStabilizationTime);
         }
-
-        private static TimeSpan GetGossipStabilizationTime(GlobalConfiguration global)
-        {
-            TimeSpan stabilizationTime = TimeSpan.Zero;
-
-            stabilizationTime += TimeSpan.FromMilliseconds(global.BackgroundGossipInterval.TotalMilliseconds * 1.05 + 50);
-
-            return stabilizationTime;
-        }
-
+        
         public void StopAllSilos()
         {
             foreach (var cluster in Clusters.Values)
@@ -123,8 +114,6 @@ namespace Tests.GeoClusterTests
 
         public ParallelOptions paralleloptions = new ParallelOptions() { MaxDegreeOfParallelism = 4 };
 
-        #region Default Cluster and Client Configuration
-
         private static int GetPortBase(int clusternumber)
         {
             return 21000 + (clusternumber + 1) * 100;
@@ -134,36 +123,48 @@ namespace Tests.GeoClusterTests
             return 22000 + (clusternumber + 2) * 100;
         }
 
-        #endregion
-
-        #region Cluster Creation
-        public void NewGeoCluster(Guid globalServiceId, string clusterId, short numSilos, Action<ClusterConfiguration> customizer = null)
+        public void NewGeoCluster(Guid globalServiceId, string clusterId, short numSilos)
         {
-           NewGeoCluster<NoOpSiloBuilderConfigurator>(globalServiceId, clusterId, numSilos, customizer);
+           NewGeoCluster<NoOpSiloBuilderConfigurator>(globalServiceId, clusterId, numSilos);
         }
-        public void NewGeoCluster<TSiloBuilderConfigurator>(Guid globalServiceId, string clusterId, short numSilos, Action<ClusterConfiguration> customizer = null)
+
+        public void NewGeoCluster<TSiloBuilderConfigurator>(
+            Guid globalServiceId,
+            string clusterId,
+            short numSilos,
+            Action<TestClusterBuilder> configureTestCluster = null)
             where TSiloBuilderConfigurator : ISiloBuilderConfigurator, new()
         {
-            Action<ClusterConfiguration> extendedcustomizer = config =>
+            NewCluster(
+                globalServiceId.ToString(),
+                clusterId,
+                numSilos,
+                builder =>
                 {
-                    // configure multi-cluster network
-                    config.Globals.ServiceId = globalServiceId;
-                    config.Globals.ClusterId = clusterId;
-                    config.Globals.HasMultiClusterNetwork = true;
-                    config.Globals.MaxMultiClusterGateways = 2;
-                    config.Globals.DefaultMultiCluster = null;
-
-                    config.Globals.GossipChannels = new List<GlobalConfiguration.GossipChannelConfiguration>(1) {
-                          new GlobalConfiguration.GossipChannelConfiguration()
-                          {
-                              ChannelType = GlobalConfiguration.GossipChannelType.AzureTable,
-                              ConnectionString = TestDefaultConfiguration.DataConnectionString
-                          }};
-                    customizer?.Invoke(config);
-                };
-
-            NewCluster<TSiloBuilderConfigurator>(globalServiceId, clusterId, numSilos, extendedcustomizer);
+                    builder.AddSiloBuilderConfigurator<TSiloBuilderConfigurator>();
+                    builder.AddSiloBuilderConfigurator<StandardGeoClusterConfigurator>();
+                    configureTestCluster?.Invoke(builder);
+                });
         }
+
+        private class StandardGeoClusterConfigurator : ISiloBuilderConfigurator
+        {
+            public void Configure(ISiloHostBuilder hostBuilder)
+            {
+                hostBuilder.Configure<MultiClusterOptions>(
+                    options =>
+                    {
+                        options.HasMultiClusterNetwork = true;
+                        options.MaxMultiClusterGateways = 2;
+                        options.DefaultMultiCluster = null;
+                        options.GossipChannels = new Dictionary<string, string>
+                        {
+                            [MultiClusterOptions.BuiltIn.AzureTable] = TestDefaultConfiguration.DataConnectionString
+                        };
+                    });
+            }
+        }
+
         private class NoOpSiloBuilderConfigurator : ISiloBuilderConfigurator
         {
             public void Configure(ISiloHostBuilder hostBuilder)
@@ -195,14 +196,22 @@ namespace Tests.GeoClusterTests
             }
         }
 
-        public void NewCluster(Guid serviceId, string clusterId, short numSilos,
-            Action<ClusterConfiguration> customizer = null)
+        public void NewCluster(Guid serviceId, string clusterId, short numSilos)
         {
-            NewCluster<NoOpSiloBuilderConfigurator>(serviceId, clusterId, numSilos, customizer);
+            NewCluster<NoOpSiloBuilderConfigurator>(serviceId, clusterId, numSilos);
         }
 
-        public void NewCluster<TSiloBuilderConfigurator>(Guid serviceId, string clusterId, short numSilos, Action<ClusterConfiguration> customizer = null)
+        public void NewCluster<TSiloBuilderConfigurator>(Guid serviceId, string clusterId, short numSilos)
             where TSiloBuilderConfigurator : ISiloBuilderConfigurator, new()
+        {
+            NewCluster(
+                serviceId.ToString(),
+                clusterId,
+                numSilos,
+                builder => builder.AddSiloBuilderConfigurator<TSiloBuilderConfigurator>());
+        }
+
+        public void NewCluster(string serviceId, string clusterId, short numSilos, Action<TestClusterBuilder> configureTestCluster)
         {
             TestCluster testCluster;
             lock (Clusters)
@@ -215,22 +224,16 @@ namespace Tests.GeoClusterTests
                 {
                     Options =
                     {
-                        ServiceId = serviceId.ToString(),
+                        ServiceId = serviceId,
                         ClusterId = clusterId,
                         BaseSiloPort = GetPortBase(myCount),
                         BaseGatewayPort = GetProxyBase(myCount)
                     },
-                    CreateSilo = AppDomainSiloHandle.Create
+                    CreateSiloAsync = AppDomainSiloHandle.Create
                 };
                 builder.AddSiloBuilderConfigurator<TestSiloBuilderConfigurator>();
-                builder.AddSiloBuilderConfigurator<TSiloBuilderConfigurator>();
-                builder.ConfigureLegacyConfiguration(legacy =>
-                {
-                    customizer?.Invoke(legacy.ClusterConfiguration);
-                    if (myCount == 0)
-                        gossipStabilizationTime = GetGossipStabilizationTime(legacy.ClusterConfiguration.Globals);
-                });
                 builder.AddSiloBuilderConfigurator<SiloHostConfigurator>();
+                configureTestCluster?.Invoke(builder);
                 testCluster = builder.Build();
                 testCluster.Deploy();
 
@@ -239,7 +242,7 @@ namespace Tests.GeoClusterTests
                     Cluster = testCluster,
                     SequenceNumber = myCount
                 };
-                
+
                 WriteLog("Cluster {0} started. [{1}]", clusterId, string.Join(" ", testCluster.GetActiveSilos().Select(s => s.ToString())));
             }
         }
@@ -299,10 +302,6 @@ namespace Tests.GeoClusterTests
             }
         }
 
-        #endregion
-
-        #region client wrappers
-
         private readonly List<ClientWrapperBase> activeClients = new List<ClientWrapperBase>();
 
 
@@ -315,42 +314,22 @@ namespace Tests.GeoClusterTests
             internal IInternalClusterClient InternalClient { get; }
 
             public IClusterClient Client => this.InternalClient;
-            private readonly Lazy<ClientConfiguration> clientConfiguration =
-                new Lazy<ClientConfiguration>(
-                    () => ClientConfiguration.LoadFromFile("ClientConfigurationForTesting.xml"));
-            public ClientWrapperBase(string name, int gatewayport, string clusterId, Action<ClientConfiguration> configCustomizer, Action<IClientBuilder> clientConfigurator)
+            public ClientWrapperBase(string name, int gatewayport, string clusterId, Action<IClientBuilder> clientConfigurator)
             {
                 this.Name = name;
-
-                Console.WriteLine("Initializing client {0}");
-
-                ClientConfiguration config = null;
-                try
-                {
-                    config = this.clientConfiguration.Value;
-                }
-                catch (Exception) { }
-
-                if (config == null)
-                {
-                    Assert.True(false, "Error loading client configuration file");
-                }
-
-                config.ClusterId = clusterId;
-                config.GatewayProvider = Orleans.Runtime.Configuration.ClientConfiguration.GatewayProviderType.Config;
-                config.Gateways.Clear();
-                config.Gateways.Add(new IPEndPoint(IPAddress.Loopback, gatewayport));
-
-                configCustomizer?.Invoke(config);
-
-                var internalClientBuilder = (IClientBuilder )new ClientBuilder()
-                    .UseConfiguration(config);
+                Console.WriteLine($"Initializing client {name}");                
+                var internalClientBuilder = new ClientBuilder()
+                    .UseLocalhostClustering(gatewayport, clusterId, clusterId);
                 clientConfigurator?.Invoke(internalClientBuilder);
                 this.InternalClient = (IInternalClusterClient) internalClientBuilder.Build();
                 this.InternalClient.Connect().Wait();
+                var loggerFactory = this.InternalClient.ServiceProvider.GetRequiredService<ILoggerFactory>();
+                this.Logger = loggerFactory.CreateLogger($"Client-{name}");
             }
 
             public IGrainFactory GrainFactory => this.Client;
+
+            public ILogger Logger { get; }
 
             public void Dispose()
             {
@@ -362,8 +341,7 @@ namespace Tests.GeoClusterTests
         public T NewClient<T>(
             string clusterId,
             int clientNumber,
-            Func<string, int, string, Action<ClientConfiguration>, Action<IClientBuilder>, T> factory,
-            Action<ClientConfiguration> customizer = null,
+            Func<string, int, string, Action<IClientBuilder>, T> factory,
             Action<IClientBuilder> clientConfigurator = null) where T : ClientWrapperBase
         {
             var ci = this.Clusters[clusterId];
@@ -374,7 +352,7 @@ namespace Tests.GeoClusterTests
 
             WriteLog("Starting {0} connected to {1}", name, gatewayport);
             
-            var client = factory(name, gatewayport, clusterId, customizer, clientConfigurator);
+            var client = factory(name, gatewayport, clusterId, clientConfigurator);
 
             lock (activeClients)
             {
@@ -413,8 +391,6 @@ namespace Tests.GeoClusterTests
                 }
             });
         }
-
-        #endregion
 
         public void BlockAllClusterCommunication(string from, string to)
         {

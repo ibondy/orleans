@@ -147,7 +147,7 @@ namespace Orleans.Providers
         }
 
         /// <summary>
-        /// Creates a quere receiver for the specificed queueId
+        /// Creates a queue receiver for the specified queueId
         /// </summary>
         /// <param name="queueId"></param>
         /// <returns></returns>
@@ -182,7 +182,7 @@ namespace Orleans.Providers
             }
             catch (Exception exc)
             {
-                logger.Error((int)ProviderErrorCode.MemoryStreamProviderBase_QueueMessageBatchAsync, "Exception thrown in MemoryAdapterFactory.QueueMessageBatchAsync.", exc);
+                logger.LogError((int)ProviderErrorCode.MemoryStreamProviderBase_QueueMessageBatchAsync, exc, "Exception thrown in MemoryAdapterFactory.QueueMessageBatchAsync.");
                 throw;
             }
         }

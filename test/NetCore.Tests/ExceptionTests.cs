@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Orleans;
@@ -21,14 +21,16 @@ namespace NetCore.Tests
             this.silo = new SiloHostBuilder()
                 .ConfigureApplicationParts(
                     parts =>
-                        parts.AddApplicationPart(typeof(ExceptionGrain).Assembly).WithReferences())
+                        parts
+                        .AddApplicationPart(typeof(ExceptionGrain).Assembly)
+                        .AddApplicationPart(typeof(IExceptionGrain).Assembly))
                 .UseLocalhostClustering()
                 .Build();
             this.silo.StartAsync().GetAwaiter().GetResult();
 
             this.client = new ClientBuilder()
                 .ConfigureApplicationParts(parts =>
-                    parts.AddApplicationPart(typeof(IExceptionGrain).Assembly).WithReferences())
+                    parts.AddApplicationPart(typeof(IExceptionGrain).Assembly))
                 .UseLocalhostClustering()
                 .Build();
             this.client.Connect().GetAwaiter().GetResult();
@@ -53,7 +55,7 @@ namespace NetCore.Tests
             this.silo?.StopAsync(cancel.Token).GetAwaiter().GetResult();
             this.silo?.Dispose();
 
-            this.client?.Abort();
+            this.client?.AbortAsync().GetAwaiter().GetResult();
             this.client?.Dispose();
         }
     }

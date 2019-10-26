@@ -1,3 +1,4 @@
+using System;
 using System.Threading.Tasks;
 using Orleans.CodeGeneration;
 using Orleans.Versions.Compatibility;
@@ -10,8 +11,8 @@ namespace Tester.HeterogeneousSilosTests.UpgradeTests
     [TestCategory("Versioning"), TestCategory("ExcludeXAML"), TestCategory("SlowBVT"), TestCategory("Functional")]
     public class RuntimeStrategyChangeTests : UpgradeTestsBase
     {
-        protected override VersionSelectorStrategy VersionSelectorStrategy => LatestVersion.Singleton;
-        protected override CompatibilityStrategy CompatibilityStrategy => AllVersionsCompatible.Singleton;
+        protected override Type VersionSelectorStrategy => typeof(LatestVersion);
+        protected override Type CompatibilityStrategy => typeof(AllVersionsCompatible);
 
         [Fact]
         public async Task ChangeCompatibilityStrategy()
@@ -100,7 +101,7 @@ namespace Tester.HeterogeneousSilosTests.UpgradeTests
         [Fact]
         public async Task ChangeDefaultVersionCompatibilityStrategy()
         {
-            Assert.Equal(AllVersionsCompatible.Singleton, CompatibilityStrategy);
+            Assert.Equal(typeof(AllVersionsCompatible), CompatibilityStrategy);
 
             await StartSiloV1();
 
@@ -134,7 +135,7 @@ namespace Tester.HeterogeneousSilosTests.UpgradeTests
         [Fact]
         public async Task ChangeDefaultVersionSelectorStrategy()
         {
-            Assert.Equal(LatestVersion.Singleton, VersionSelectorStrategy);
+            Assert.Equal(typeof(LatestVersion), VersionSelectorStrategy);
 
             await StartSiloV1();
 
@@ -142,10 +143,10 @@ namespace Tester.HeterogeneousSilosTests.UpgradeTests
             var grainV1 = Client.GetGrain<IVersionUpgradeTestGrain>(0);
             Assert.Equal(1, await grainV1.GetVersion());
 
+            await StartSiloV2();
+
             // Change default to minimum version
             await ManagementGrain.SetSelectorStrategy(MinimumVersion.Singleton);
-
-            await StartSiloV2();
 
             // But only activate V1
             for (int i = 0; i < 100; i++)

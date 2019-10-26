@@ -30,26 +30,24 @@ namespace UnitTests.Serialization
         {
             var v = new MyTypeWithAnInternalTypeField();
 
-            Assert.NotNull(this.fixture.SerializationManager.GetSerializer(typeof (MyTypeWithAnInternalTypeField)));
+            Assert.NotNull(this.fixture.SerializationManager.GetSerializer(typeof(MyTypeWithAnInternalTypeField)));
             Assert.NotNull(this.fixture.SerializationManager.GetSerializer(typeof(MyTypeWithAnInternalTypeField.MyInternalDependency)));
         }
 
         /// <summary>
-        /// Types with an ancestor marked with <see cref="KnownBaseTypeAttribute"/> should have serializers generated.
+        /// Types with an ancestor marked with KnownBaseTypeAttribute should have serializers generated.
         /// </summary>
         [Fact]
         public void SerializationTests_TypeWithWellKnownBaseClass()
         {
             Assert.NotNull(this.fixture.SerializationManager.GetSerializer(typeof(DescendantOfWellKnownBaseClass)));
             Assert.NotNull(this.fixture.SerializationManager.GetSerializer(typeof(ImplementsWellKnownInterface)));
-            Assert.Null(this.fixture.SerializationManager.GetSerializer(typeof(NotDescendantOfWellKnownBaseType)));
-
+            
             var partManager = this.fixture.Services.GetRequiredService<IApplicationPartManager>();
             var serializerFeature = new SerializerFeature();
             partManager.PopulateFeature(serializerFeature);
             Assert.Contains(serializerFeature.SerializerTypes, s => s.Target == typeof(DescendantOfWellKnownBaseClass));
             Assert.Contains(serializerFeature.SerializerTypes, s => s.Target == typeof(ImplementsWellKnownInterface));
-            Assert.DoesNotContain(serializerFeature.SerializerTypes, s => s.Target == typeof(NotDescendantOfWellKnownBaseType));
         }
     }
 }

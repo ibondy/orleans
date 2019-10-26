@@ -1,14 +1,14 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
+using Microsoft.Azure.Cosmos.Table;
 using Microsoft.Extensions.Logging;
-using Microsoft.WindowsAzure.Storage.Table;
-using Orleans.MultiCluster;
-using Orleans.Clustering.AzureStorage.Utilities;
-using Orleans.AzureUtils;
 using Orleans.Clustering.AzureStorage;
+using Orleans.Internal;
+using Orleans.Clustering.AzureStorage.Utilities;
+using Orleans.MultiCluster;
 
 namespace Orleans.Runtime.MultiClusterNetwork
 {
@@ -21,8 +21,6 @@ namespace Orleans.Runtime.MultiClusterNetwork
         internal string GlobalServiceId { get { return PartitionKey; } }
 
         public DateTime GossipTimestamp { get; set; }   // timestamp of gossip entry
-
-        #region gateway entry
 
         public string Status { get; set; }
 
@@ -38,15 +36,9 @@ namespace Orleans.Runtime.MultiClusterNetwork
 
         public SiloAddress SiloAddress;
 
-        #endregion
-
-        #region configuration entry
-
         public string Clusters { get; set; }   // comma-separated list of clusters
 
         public string Comment { get; set; }
-
-        #endregion
 
         internal const string CONFIGURATION_ROW = "CONFIG"; // Row key for configuration row.
 
@@ -133,7 +125,7 @@ namespace Orleans.Runtime.MultiClusterNetwork
         public static async Task<GossipTableInstanceManager> GetManager(string globalServiceId, string storageConnectionString, ILoggerFactory loggerFactory)
         {
             if (loggerFactory == null) throw new ArgumentNullException(nameof(loggerFactory));
-            
+
             var instance = new GossipTableInstanceManager(globalServiceId, storageConnectionString, loggerFactory);
             try
             {
@@ -142,14 +134,14 @@ namespace Orleans.Runtime.MultiClusterNetwork
             }
             catch (TimeoutException te)
             {
-                string errorMsg = String.Format("Unable to create or connect to the Azure table {0} in {1}", 
+                string errorMsg = String.Format("Unable to create or connect to the Azure table {0} in {1}",
                     instance.TableName, initTimeout);
                 instance.logger.Error((int)TableStorageErrorCode.AzureTable_65, errorMsg, te);
                 throw new OrleansException(errorMsg, te);
             }
             catch (Exception ex)
             {
-                string errorMsg = String.Format("Exception trying to create or connect to Azure table {0} : {1}", 
+                string errorMsg = String.Format("Exception trying to create or connect to Azure table {0} : {1}",
                     instance.TableName, ex.Message);
                 instance.logger.Error((int)TableStorageErrorCode.AzureTable_66, errorMsg, ex);
                 throw new OrleansException(errorMsg, ex);
@@ -267,7 +259,7 @@ namespace Orleans.Runtime.MultiClusterNetwork
 
 
         internal async Task<bool> TryUpdateGatewayEntryAsync(GatewayEntry entry, GossipTableEntry row, string eTag)
-        {            
+        {
             row.Status = entry.Status.ToString();
             row.GossipTimestamp = entry.HeartbeatTimestamp;
 
@@ -310,7 +302,7 @@ namespace Orleans.Runtime.MultiClusterNetwork
 
         /// <summary>
         /// Try once to insert a new data entry in the Azure table. Returns false if there is a conflict.
-        /// </summary>       
+        /// </summary>
         private async Task<bool> TryCreateTableEntryAsync(GossipTableEntry data, [CallerMemberName]string operation = null)
         {
             return await TryOperation(() => storage.CreateTableEntryAsync(data), operation);
@@ -318,7 +310,7 @@ namespace Orleans.Runtime.MultiClusterNetwork
 
         /// <summary>
         /// Try once to delete a data entry in the Azure table. Returns false if there is a conflict.
-        /// </summary>       
+        /// </summary>
         private async Task<bool> TryDeleteTableEntryAsync(GossipTableEntry data, string etag, [CallerMemberName]string operation = null)
         {
             return await TryOperation(() => storage.DeleteTableEntryAsync(data, etag), operation);
@@ -335,10 +327,10 @@ namespace Orleans.Runtime.MultiClusterNetwork
             {
                 HttpStatusCode httpStatusCode;
                 string restStatus;
-                if (!AzureStorageUtils.EvaluateException(exc, out httpStatusCode, out restStatus)) throw;
+                if (!AzureTableUtils.EvaluateException(exc, out httpStatusCode, out restStatus)) throw;
 
                 if (logger.IsEnabled(LogLevel.Trace)) logger.Trace("{0} failed with httpStatusCode={1}, restStatus={2}", operation, httpStatusCode, restStatus);
-                if (AzureStorageUtils.IsContentionError(httpStatusCode)) return false;
+                if (AzureTableUtils.IsContentionError(httpStatusCode)) return false;
 
                 throw;
             }

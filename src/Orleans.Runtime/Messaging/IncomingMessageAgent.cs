@@ -1,11 +1,11 @@
 using System;
-using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Orleans.Runtime.Scheduler;
 
 namespace Orleans.Runtime.Messaging
 {
-    internal class IncomingMessageAgent : AsynchAgent
+    internal class IncomingMessageAgent : TaskSchedulerAgent
     {
         private readonly IMessageCenter messageCenter;
         private readonly ActivationDirectory directory;
@@ -21,9 +21,8 @@ namespace Orleans.Runtime.Messaging
             OrleansTaskScheduler sched, 
             Dispatcher dispatcher, 
             MessageFactory messageFactory,
-            ExecutorService executorService,
             ILoggerFactory loggerFactory) :
-            base(cat.ToString(), executorService, loggerFactory)
+            base(cat.ToString(), loggerFactory)
         {
             category = cat;
             messageCenter = mc;
@@ -32,6 +31,7 @@ namespace Orleans.Runtime.Messaging
             this.dispatcher = dispatcher;
             this.messageFactory = messageFactory;
             OnFault = FaultBehavior.RestartOnFault;
+            messageCenter.RegisterLocalMessageHandler(cat, ReceiveMessage);
         }
 
         public override void Start()
@@ -40,57 +40,35 @@ namespace Orleans.Runtime.Messaging
             if (Log.IsEnabled(LogLevel.Trace)) Log.Trace("Started incoming message agent for silo at {0} for {1} messages", messageCenter.MyAddress, category);
         }
 
-        protected override void Run()
+        protected override async Task Run()
         {
-            try
+            var reader = messageCenter.GetReader(category);
+            while (true)
             {
-#if TRACK_DETAILED_STATS
-                if (StatisticsCollector.CollectThreadTimeTrackingStats)
+                var moreTask = reader.WaitToReadAsync();
+                var more = moreTask.IsCompletedSuccessfully ? moreTask.GetAwaiter().GetResult() : await moreTask;
+                if (!more) return;
+
+                // Get an application message
+                while (reader.TryRead(out var msg))
                 {
-                    threadTracking.OnStartExecution();
-                }
-#endif
-                CancellationToken ct = Cts.Token;
-                while (true)
-                {
-                    // Get an application message
-                    var msg = messageCenter.WaitMessage(category, ct);
                     if (msg == null)
                     {
                         if (Log.IsEnabled(LogLevel.Debug)) Log.Debug("Dequeued a null message, exiting");
                         // Null return means cancelled
-                        break;
+                        continue;
                     }
-
- #if TRACK_DETAILED_STATS
-                    if (StatisticsCollector.CollectThreadTimeTrackingStats)
+                    else
                     {
-                        threadTracking.OnStartProcessing();
+                        ReceiveMessage(msg);
                     }
- #endif
-                    ReceiveMessage(msg);
- #if TRACK_DETAILED_STATS
-                    if (StatisticsCollector.CollectThreadTimeTrackingStats)
-                    {
-                        threadTracking.OnStopProcessing();
-                        threadTracking.IncrementNumberOfProcessed();
-                    }
- #endif
                 }
-            }
-            finally
-            {
-#if TRACK_DETAILED_STATS
-                if (StatisticsCollector.CollectThreadTimeTrackingStats)
-                {
-                    threadTracking.OnStopExecution();
-                }
-#endif
             }
         }
 
         private void ReceiveMessage(Message msg)
         {
+            EventSourceUtils.EmitEvent(msg, OrleansIncomingMessageAgentEvent.ReceiverMessageAction);
             MessagingProcessingStatisticsGroup.OnImaMessageReceived(msg);
 
             ISchedulingContext context;

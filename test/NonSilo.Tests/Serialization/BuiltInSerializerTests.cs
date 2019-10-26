@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Orleans;
 using Orleans.Concurrency;
+using Orleans.Configuration;
 using Orleans.GrainDirectory;
 using Orleans.Runtime;
 using Orleans.Runtime.Configuration;
@@ -71,28 +72,27 @@ namespace UnitTests.Serialization
                 serializerToUse,
                 _ =>
                 {
-                    TypeInfo fallback;
+                    Type fallback;
                     switch (serializerToUse)
                     {
                         case SerializerToUse.IlBasedFallbackSerializer:
-                            fallback = typeof(ILBasedSerializer).GetTypeInfo();
+#pragma warning disable CS0618 // Type or member is obsolete
+                            fallback = typeof(ILBasedSerializer);
+#pragma warning restore CS0618 // Type or member is obsolete
                             break;
                         case SerializerToUse.BinaryFormatterFallbackSerializer:
-                            fallback = typeof(BinaryFormatterSerializer).GetTypeInfo();
+                            fallback = typeof(BinaryFormatterSerializer);
                             break;
                         case SerializerToUse.NoFallback:
-                            fallback = typeof(SupportsNothingSerializer).GetTypeInfo();
+                            fallback = typeof(SupportsNothingSerializer);
                             break;
                         default:
                             throw new InvalidOperationException("Invalid Serializer was selected");
                     }
 
-                    var config = new ClientConfiguration
-                    {
-                        FallbackSerializationProvider = fallback
-                    };
-
-                    return SerializationTestEnvironment.InitializeWithDefaults(config);
+                    return SerializationTestEnvironment.InitializeWithDefaults(
+                        builder => builder.Configure<SerializationProviderOptions>(
+                            options => options.FallbackSerializationProvider = fallback));
                 });
         }
 
@@ -599,7 +599,6 @@ namespace UnitTests.Serialization
         {
             // Create an environment which has no keyed serializer. This will cause some exception types to be unserializable.
             var environment = SerializationTestEnvironment.InitializeWithDefaults(
-                null,
                 builder => builder.ConfigureServices(
                     services => services.RemoveAll(typeof(IKeyedSerializer))));
             const string message = "This is a test message";
@@ -811,7 +810,7 @@ namespace UnitTests.Serialization
         public void Serialize_GrainBase_ViaStandardSerializer(SerializerToUse serializerToUse)
         {
             var environment = InitializeSerializer(serializerToUse);
-            Grain input = new EchoTaskGrain(null);
+            Grain input = new EchoTaskGrain(null, null);
 
             // Expected exception:
             // System.Runtime.Serialization.SerializationException: Type 'Echo.Grains.EchoTaskGrain' in Assembly 'UnitTestGrains, Version=1.0.0.0, Culture=neutral, PublicKeyToken=070f47935e3ed133' is not marked as serializable.
@@ -886,39 +885,39 @@ namespace UnitTests.Serialization
         }
 
         [Theory, TestCategory("Functional")]
-        [InlineData(SerializerToUse.NoFallback)]
-        public void SerializationTests_IsOrleansShallowCopyable(SerializerToUse serializerToUse)
+        [InlineData(typeof(Dictionary<string, object>))]
+        [InlineData(typeof(Dictionary<string, int>))]
+        [InlineData(typeof(NonShallowCopyableValueType))]
+        [InlineData(typeof(NonShallowCopyableValueType?))]
+        [InlineData(typeof(Tuple<string, NonShallowCopyableValueType>))]
+        public void SerializationTests_IsNotOrleansShallowCopyable(Type type)
         {
-            var environment = InitializeSerializer(serializerToUse);
-            var nonShallowCopyableTypes = new[]
-            {
-                typeof(Dictionary<string, object>),
-                typeof(Dictionary<string, int>)
-            };
+            Assert.False(type.IsOrleansShallowCopyable());
+        }
 
-            foreach (var nonShallowCopyableType in nonShallowCopyableTypes)
-            {
-                Assert.False(nonShallowCopyableType.IsOrleansShallowCopyable(), $"IsOrleansShallowCopyable: {nonShallowCopyableType.Name}");
-            }
-
-            var shallowCopyableTypes = new[]
-            {
-                typeof(int),
-                typeof(DateTime),
-                typeof(Immutable<Dictionary<string, object>>),
-                typeof(ShallowCopyableValueType),
-                typeof(ArgumentNullException)
-            };
-
-            foreach (var shallowCopyableType in shallowCopyableTypes)
-            {
-                Assert.True(shallowCopyableType.IsOrleansShallowCopyable(), $"IsOrleansShallowCopyable: {shallowCopyableType.Name}");
-            }
+        [Theory, TestCategory("Functional")]
+        [InlineData(typeof(int))]
+        [InlineData(typeof(DateTime))]
+        [InlineData(typeof(Immutable<Dictionary<string, object>>))]
+        [InlineData(typeof(ShallowCopyableValueType))]
+        [InlineData(typeof(ArgumentNullException))]
+        [InlineData(typeof(int?))]
+        [InlineData(typeof(Tuple<string, int>))]
+        [InlineData(typeof(Tuple<Guid?, Tuple<string, ShallowCopyableValueType?, DateTimeOffset>>))]
+        public void SerializationTests_IsOrleansShallowCopyable(Type type)
+        {
+            Assert.True(type.IsOrleansShallowCopyable());
         }
 
         public struct ShallowCopyableValueType
         {
             public int AnotherValueType;
+        }
+
+        public struct NonShallowCopyableValueType
+        {
+            public object AutoProp { get; }
+            public NonShallowCopyableValueType(object o) => AutoProp = o;
         }
 
         internal static object OrleansSerializationLoop(SerializationManager serializationManager, object input, bool includeWire = true)

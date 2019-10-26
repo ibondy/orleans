@@ -4,6 +4,7 @@
     <Title>Microsoft Orleans Client Libraries</Title>
     <Description>Collection of Microsoft Orleans libraries and files needed on the client.</Description>
     <IncludeBuildOutput>false</IncludeBuildOutput>
+<<<<<<< HEAD
     <FileUpgradeFlags>
     </FileUpgradeFlags>
     <UpgradeBackupLocation>
@@ -16,3 +17,9 @@
     <ProjectReference Include="..\OrleansProviders\OrleansProviders.csproj" />
   </ItemGroup>
 </Project>
+=======
+    <NoPackageAnalysis>true</NoPackageAnalysis>
+  </PropertyGroup>
+
+</Project>
+>>>>>>> 61665249c1d952829185026690ada9931edcdc37

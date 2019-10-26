@@ -1,4 +1,4 @@
-﻿using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics.CodeAnalysis;
 
 //
 // Number of #ifs can be reduced (or removed), once we separate test projects by feature/area, otherwise we are ending up with ambigous types and build errors.
@@ -16,6 +16,8 @@ namespace Orleans.Streaming.AzureStorage.Utilities
 namespace Orleans.Streaming.EventHubs.Utilities
 #elif TESTER_AZUREUTILS
 namespace Orleans.Tests.AzureUtils.Utilities
+#elif ORLEANS_TRANSACTIONS
+namespace Orleans.Transactions.AzureStorage.Utilities
 #else
 // No default namespace intentionally to cause compile errors if something is not defined
 #endif

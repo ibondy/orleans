@@ -4,11 +4,11 @@ using System.Linq;
 using System.Net;
 using System.Text;
 using System.Threading.Tasks;
+using Microsoft.Azure.Cosmos.Table;
 using Microsoft.Extensions.Logging;
-using Microsoft.WindowsAzure.Storage.Table;
 using Orleans.AzureUtils.Utilities;
-using Orleans.AzureUtils;
 using Orleans.Reminders.AzureStorage;
+using Orleans.Internal;
 
 namespace Orleans.Runtime.ReminderService
 {
@@ -17,16 +17,16 @@ namespace Orleans.Runtime.ReminderService
         public string GrainReference        { get; set; }    // Part of RowKey
         public string ReminderName          { get; set; }    // Part of RowKey
         public string ServiceId             { get; set; }    // Part of PartitionKey
-        public string DeploymentId          { get; set; }    
-        public string StartAt               { get; set; }    
-        public string Period                { get; set; }    
+        public string DeploymentId          { get; set; }
+        public string StartAt               { get; set; }
+        public string Period                { get; set; }
         public string GrainRefConsistentHash { get; set; }    // Part of PartitionKey
 
 
         public static string ConstructRowKey(GrainReference grainRef, string reminderName)
         {
             var key = String.Format("{0}-{1}", grainRef.ToKeyString(), reminderName); //grainRef.ToString(), reminderName);
-            return AzureStorageUtils.SanitizeTableProperty(key);
+            return AzureTableUtils.SanitizeTableProperty(key);
         }
 
         public static string ConstructPartitionKey(string serviceId, GrainReference grainRef)
@@ -36,7 +36,7 @@ namespace Orleans.Runtime.ReminderService
 
         public static string ConstructPartitionKey(string serviceId, uint number)
         {
-            // IMPORTANT NOTE: Other code using this return data is very sensitive to format changes, 
+            // IMPORTANT NOTE: Other code using this return data is very sensitive to format changes,
             //       so take great care when making any changes here!!!
 
             // this format of partition key makes sure that the comparisons in FindReminderEntries(begin, end) work correctly
@@ -44,8 +44,7 @@ namespace Orleans.Runtime.ReminderService
             // when comparisons will be done on strings, this will ensure that positive numbers are always greater than negative
             // string grainHash = number < 0 ? string.Format("0{0}", number.ToString("X")) : string.Format("1{0:d16}", number);
 
-            var grainHash = String.Format("{0:X8}", number);
-            return String.Format("{0}_{1}", serviceId, grainHash);
+            return AzureTableUtils.SanitizeTableProperty($"{serviceId}_{number:X8}");
         }
 
 
@@ -64,23 +63,21 @@ namespace Orleans.Runtime.ReminderService
             sb.Append(" Period=").Append(Period);
             sb.Append(" GrainRefConsistentHash=").Append(GrainRefConsistentHash);
             sb.Append("]");
-            
+
             return sb.ToString();
         }
     }
-    
+
     internal class RemindersTableManager : AzureTableDataManager<ReminderTableEntry>
     {
-        private const string REMINDERS_TABLE_NAME = "OrleansReminders";
-
         public string ServiceId { get; private set; }
         public string ClusterId { get; private set; }
 
         private static readonly TimeSpan initTimeout = AzureTableDefaultPolicies.TableCreationTimeout;
 
-        public static async Task<RemindersTableManager> GetManager(string serviceId, string clusterId, string storageConnectionString, ILoggerFactory loggerFactory)
+        public static async Task<RemindersTableManager> GetManager(string serviceId, string clusterId, string storageConnectionString, string tableName, ILoggerFactory loggerFactory)
         {
-            var singleton = new RemindersTableManager(serviceId, clusterId, storageConnectionString, loggerFactory);
+            var singleton = new RemindersTableManager(serviceId, clusterId, storageConnectionString, tableName, loggerFactory);
             try
             {
                 singleton.Logger.Info("Creating RemindersTableManager for service id {0} and clusterId {1}.", serviceId, clusterId);
@@ -102,8 +99,8 @@ namespace Orleans.Runtime.ReminderService
             return singleton;
         }
 
-        private RemindersTableManager(string serviceId, string clusterId, string storageConnectionString, ILoggerFactory loggerFactory)
-            : base(REMINDERS_TABLE_NAME, storageConnectionString, loggerFactory)
+        private RemindersTableManager(string serviceId, string clusterId, string storageConnectionString, string tableName, ILoggerFactory loggerFactory)
+            : base(tableName, storageConnectionString, loggerFactory)
         {
             ClusterId = clusterId;
             ServiceId = serviceId;
@@ -137,7 +134,7 @@ namespace Orleans.Runtime.ReminderService
                 var queryResults = await ReadTableEntriesAndEtagsAsync(filterOnServiceIdStr);
                 return queryResults.ToList();
             }
-            
+
             // (begin > end)
             string queryOnSBegin = TableQuery.CombineFilters(
                 filterOnServiceIdStr, TableOperators.And, TableQuery.GenerateFilterCondition(nameof(ReminderTableEntry.PartitionKey), QueryComparisons.GreaterThan, sBegin));
@@ -191,13 +188,13 @@ namespace Orleans.Runtime.ReminderService
             {
                 HttpStatusCode httpStatusCode;
                 string restStatus;
-                if (AzureStorageUtils.EvaluateException(exc, out httpStatusCode, out restStatus))
+                if (AzureTableUtils.EvaluateException(exc, out httpStatusCode, out restStatus))
                 {
                     if (Logger.IsEnabled(LogLevel.Trace)) Logger.Trace("UpsertRow failed with httpStatusCode={0}, restStatus={1}", httpStatusCode, restStatus);
-                    if (AzureStorageUtils.IsContentionError(httpStatusCode)) return null; // false;
+                    if (AzureTableUtils.IsContentionError(httpStatusCode)) return null; // false;
                 }
                 throw;
-            }              
+            }
         }
 
 
@@ -211,16 +208,14 @@ namespace Orleans.Runtime.ReminderService
             {
                 HttpStatusCode httpStatusCode;
                 string restStatus;
-                if (AzureStorageUtils.EvaluateException(exc, out httpStatusCode, out restStatus))
+                if (AzureTableUtils.EvaluateException(exc, out httpStatusCode, out restStatus))
                 {
                     if (Logger.IsEnabled(LogLevel.Trace)) Logger.Trace("DeleteReminderEntryConditionally failed with httpStatusCode={0}, restStatus={1}", httpStatusCode, restStatus);
-                    if (AzureStorageUtils.IsContentionError(httpStatusCode)) return false;
+                    if (AzureTableUtils.IsContentionError(httpStatusCode)) return false;
                 }
                 throw;
             }
         }
-
-        #region Table operations
 
         internal async Task DeleteTableEntries()
         {
@@ -250,7 +245,5 @@ namespace Orleans.Runtime.ReminderService
                 await Task.WhenAll(tasks);
             }
         }
-
-        #endregion
     }
 }

@@ -16,11 +16,16 @@ namespace Orleans.Serialization
         public const string UseFullAssemblyNamesProperty = "UseFullAssemblyNames";
         public const string IndentJsonProperty = "IndentJSON";
         public const string TypeNameHandlingProperty = "TypeNameHandling";
-        private readonly JsonSerializerSettings settings;
+        private readonly Lazy<JsonSerializerSettings> settings;
 
-        public OrleansJsonSerializer(ITypeResolver typeResolver, IGrainFactory grainFactory)
+        public OrleansJsonSerializer(IServiceProvider services)
         {
-            this.settings = GetDefaultSerializerSettings(typeResolver, grainFactory);
+            this.settings = new Lazy<JsonSerializerSettings>(() =>
+            {
+                var typeResolver = services.GetRequiredService<ITypeResolver>();
+                var grainFactory = services.GetRequiredService<IGrainFactory>();
+                return GetDefaultSerializerSettings(typeResolver, grainFactory);
+            });
         }
 
         /// <summary>
@@ -85,6 +90,7 @@ namespace Orleans.Serialization
             {
                 settings.TypeNameHandling = typeNameHandling.Value;
             }
+           
             return settings;
         }
 
@@ -102,19 +108,20 @@ namespace Orleans.Serialization
                 return null;
             }
 
+            var outputWriter = new BinaryTokenStreamWriter();
             var serializationContext = new SerializationContext(context.GetSerializationManager())
             {
-                StreamWriter = new BinaryTokenStreamWriter()
+                StreamWriter = outputWriter
             };
             
             Serialize(source, serializationContext, source.GetType());
             var deserializationContext = new DeserializationContext(context.GetSerializationManager())
             {
-                StreamReader = new BinaryTokenStreamReader(serializationContext.StreamWriter.ToBytes())
+                StreamReader = new BinaryTokenStreamReader(outputWriter.ToBytes())
             };
 
             var retVal = Deserialize(source.GetType(), deserializationContext);
-            serializationContext.StreamWriter.ReleaseBuffers();
+            outputWriter.ReleaseBuffers();
             return retVal;
         }
 
@@ -128,7 +135,7 @@ namespace Orleans.Serialization
 
             var reader = context.StreamReader;
             var str = reader.ReadString();
-            return JsonConvert.DeserializeObject(str, expectedType, this.settings);
+            return JsonConvert.DeserializeObject(str, expectedType, this.settings.Value);
         }
 
         /// <summary>
@@ -151,12 +158,10 @@ namespace Orleans.Serialization
                 return;
             }
 
-            var str = JsonConvert.SerializeObject(item, expectedType, this.settings);
+            var str = JsonConvert.SerializeObject(item, expectedType, this.settings.Value);
             writer.Write(str);
         }
     }
-
-#region JsonConverters
 
     public class IPAddressConverter : JsonConverter
     {
@@ -245,7 +250,7 @@ namespace Orleans.Serialization
         public override object ReadJson(JsonReader reader, Type objectType, object existingValue, JsonSerializer serializer)
         {
             JObject jo = JObject.Load(reader);
-            UniqueKey addr = UniqueKey.Parse(jo["UniqueKey"].ToObject<string>());
+            UniqueKey addr = UniqueKey.Parse(jo["UniqueKey"].ToObject<string>().AsSpan());
             return addr;
         }
     }
@@ -335,6 +340,4 @@ namespace Orleans.Serialization
             return grainRef;
         }
     }
-
-    #endregion
 }

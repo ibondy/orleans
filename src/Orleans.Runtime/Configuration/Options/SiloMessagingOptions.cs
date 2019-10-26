@@ -1,6 +1,5 @@
 using System;
-using System.Collections.Generic;
-using Microsoft.Extensions.Options;
+using System.Diagnostics;
 using Orleans.Runtime;
 
 namespace Orleans.Configuration
@@ -10,6 +9,11 @@ namespace Orleans.Configuration
     /// </summary>
     public class SiloMessagingOptions : MessagingOptions
     {
+        /// <summary>
+        /// <see cref="SystemResponseTimeout"/>.
+        /// </summary>
+        private TimeSpan systemResponseTimeout = DEFAULT_RESPONSE_TIMEOUT;
+
         /// <summary>
         /// The SiloSenderQueues attribute specifies the number of parallel queues and attendant threads used by the silo to send outbound
         /// messages (requests, responses, and notifications) to other silos.
@@ -25,7 +29,7 @@ namespace Orleans.Configuration
         public int GatewaySenderQueues { get; set; }
 
         /// <summary>
-        /// The MaxForwardCount attribute specifies the maximal number of times a message is being forwared from one silo to another.
+        /// The MaxForwardCount attribute specifies the maximal number of times a message is being forwarded from one silo to another.
         /// Forwarding is used internally by the tuntime as a recovery mechanism when silos fail and the membership is unstable.
         /// In such times the messages might not be routed correctly to destination, and runtime attempts to forward such messages a number of times before rejecting them.
         /// </summary>
@@ -70,11 +74,29 @@ namespace Orleans.Configuration
         /// Specifies the maximum time that a request can take before the activation is reported as "blocked"
         /// </summary>
         public TimeSpan MaxRequestProcessingTime { get; set; } = DEFAULT_MAX_REQUEST_PROCESSING_TIME;
-        public static readonly TimeSpan DEFAULT_MAX_REQUEST_PROCESSING_TIME = GrainCollectionOptions.DEFAULT_COLLECTION_AGE_LIMIT;
+        public static readonly TimeSpan DEFAULT_MAX_REQUEST_PROCESSING_TIME = CollectionAgeLimitAttribute.DEFAULT_COLLECTION_AGE_LIMIT;
 
         /// <summary>
         /// For test only - Do not use in production
         /// </summary>
         public bool AssumeHomogenousSilosForTesting { get; set; } = false;
+
+        public static TimeSpan DEFAULT_SHUTDOWN_REROUTE_TIMEOUT { get; set; } = TimeSpan.FromSeconds(10);
+
+        /// <summary>
+        /// How long the silo will wait for rerouting queued mesages, before it continues shutting down. 
+        /// </summary>
+        public TimeSpan ShutdownRerouteTimeout { get; set; } =
+            DEFAULT_SHUTDOWN_REROUTE_TIMEOUT;
+
+        /// <summary>
+        /// The SystemResponseTimeout attribute specifies the default timeout before an internal system request is assumed to have failed.
+        /// <seealso cref="MessagingOptions.ResponseTimeoutWithDebugger"/>
+        /// </summary>
+        public TimeSpan SystemResponseTimeout
+        {
+            get { return Debugger.IsAttached ? ResponseTimeoutWithDebugger : this.systemResponseTimeout; }
+            set { this.systemResponseTimeout = value; }
+        }
     }
 }

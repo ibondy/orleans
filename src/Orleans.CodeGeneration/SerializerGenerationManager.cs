@@ -56,12 +56,11 @@ namespace Orleans.CodeGenerator
         private bool HasSerializer(Type type)
         {
             if (this.typesToIgnore.Contains(type)) return true;
-            var typeInfo = type.GetTypeInfo();
-            if (typeInfo.IsOrleansPrimitive()) return true;
-            if (!typeInfo.IsGenericType) return false;
-            var genericTypeDefinition = typeInfo.GetGenericTypeDefinition();
+            if (type.IsOrleansPrimitive()) return true;
+            if (!type.IsGenericType) return false;
+            var genericTypeDefinition = type.GetGenericTypeDefinition();
             return this.typesToIgnore.Contains(genericTypeDefinition) &&
-                   typeInfo.GetGenericArguments().All(arg => HasSerializer(arg));
+                   type.GetGenericArguments().All(arg => this.HasSerializer(arg));
         }
 
         internal bool IsTypeRecorded(Type type)
@@ -74,7 +73,7 @@ namespace Orleans.CodeGenerator
             return this.typesToIgnore.Contains(type);
         }
 
-        internal bool RecordType(Type t, Assembly targetAssembly)
+        internal bool RecordType(Type t, Assembly targetAssembly, string logContext)
         {
             if (!TypeUtilities.IsAccessibleFromAssembly(t, targetAssembly))
             {
@@ -83,13 +82,13 @@ namespace Orleans.CodeGenerator
 
             if (t.IsGenericParameter || processedTypes.Contains(t) || typesToProcess.Contains(t)
                 || typesToIgnore.Contains(t)
-                || typeof (Exception).GetTypeInfo().IsAssignableFrom(t)
-                || typeof (Delegate).GetTypeInfo().IsAssignableFrom(t)
-                || typeof (Task<>).GetTypeInfo().IsAssignableFrom(t)) return false;
+                || typeof (Exception).IsAssignableFrom(t)
+                || typeof (Delegate).IsAssignableFrom(t)
+                || typeof (Task<>).IsAssignableFrom(t)) return false;
 
             if (t.IsArray)
             {
-                RecordType(t.GetElementType(), targetAssembly);
+                RecordType(t.GetElementType(), targetAssembly, logContext);
                 return false;
             }
 
@@ -107,7 +106,8 @@ namespace Orleans.CodeGenerator
                 var args = t.GetGenericArguments();
                 foreach (var arg in args)
                 {
-                    RecordType(arg, targetAssembly);
+                    if (log.IsEnabled(LogLevel.Trace)) logContext = "generic argument of type " + t.GetLogFormat();
+                    RecordType(arg, targetAssembly, logContext);
                 }
             }
 
@@ -116,11 +116,11 @@ namespace Orleans.CodeGenerator
 
             if (t.IsConstructedGenericType)
             {
-                return RecordType(t.GetGenericTypeDefinition(), targetAssembly);
+                return RecordType(t.GetGenericTypeDefinition(), targetAssembly, logContext);
             }
 
             if (t.IsOrleansPrimitive() || this.HasSerializer(t) ||
-                typeof(IAddressable).GetTypeInfo().IsAssignableFrom(t)) return false;
+                typeof(IAddressable).IsAssignableFrom(t)) return false;
 
             if (t.Namespace != null && (t.Namespace.Equals("System") || t.Namespace.StartsWith("System.")))
             {
@@ -149,12 +149,15 @@ namespace Orleans.CodeGenerator
             // Instead, a fallback serializer which supports those hooks can be used.
             if (DotNetSerializableUtilities.HasSerializationHookAttributes(t)) return false;
 
-            typesToProcess.Add(t);
+            if (!typesToProcess.Add(t)) return true;
+
+            if (log.IsEnabled(LogLevel.Trace)) log.LogTrace($"Will generate serializer for type {t.GetLogFormat()} encountered from {logContext}");
 
             var interfaces = t.GetInterfaces().Where(x => x.IsConstructedGenericType);
+            if (log.IsEnabled(LogLevel.Trace)) logContext = "generic argument of implemented interface on type " + t.GetLogFormat();
             foreach (var arg in interfaces.SelectMany(v => v.GetGenericArguments()))
             {
-                RecordType(arg, targetAssembly);
+                RecordType(arg, targetAssembly, logContext);
             }
 
             return true;

@@ -35,6 +35,7 @@ namespace Orleans.Runtime.TestHooks
     internal class TestHooksSystemTarget : SystemTarget, ITestHooksSystemTarget
     {
         private readonly ISiloHost host;
+        private readonly ISiloStatusOracle siloStatusOracle;
 
         private readonly TestHooksHostEnvironmentStatistics hostEnvironmentStatistics;
 
@@ -46,11 +47,13 @@ namespace Orleans.Runtime.TestHooks
             ISiloHost host,
             ILocalSiloDetails siloDetails,
             ILoggerFactory loggerFactory,
+            ISiloStatusOracle siloStatusOracle,
             TestHooksHostEnvironmentStatistics hostEnvironmentStatistics,
             IOptions<LoadSheddingOptions> loadSheddingOptions)
             : base(Constants.TestHooksSystemTargetId, siloDetails.SiloAddress, loggerFactory)
         {
             this.host = host;
+            this.siloStatusOracle = siloStatusOracle;
             this.hostEnvironmentStatistics = hostEnvironmentStatistics;
             this.loadSheddingOptions = loadSheddingOptions.Value;
             this.consistentRingProvider = this.host.Services.GetRequiredService<IConsistentRingProvider>();
@@ -116,6 +119,8 @@ namespace Orleans.Runtime.TestHooks
 
             return Task.CompletedTask;
         }
+
+        public Task<Dictionary<SiloAddress, SiloStatus>> GetApproximateSiloStatuses() => Task.FromResult(this.siloStatusOracle.GetApproximateSiloStatuses());
 
         private void LatchCpuUsage(float? cpuUsage, TimeSpan latchPeriod)
         {

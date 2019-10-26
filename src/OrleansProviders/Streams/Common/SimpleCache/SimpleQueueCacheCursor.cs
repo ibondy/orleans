@@ -54,7 +54,7 @@ namespace Orleans.Providers.Streams.Common
             this.streamIdentity = streamIdentity;
             this.logger = logger;
             current = null;
-            SimpleQueueCache.Log(logger, "SimpleQueueCacheCursor New Cursor for {0}, {1}", streamIdentity.Guid, streamIdentity.Namespace);
+            SimpleQueueCache.Log(logger, "SimpleQueueCacheCursor New Cursor for {Guid}, {NameSpace}", streamIdentity.Guid, streamIdentity.Namespace);
         }
 
         /// <summary>
@@ -68,7 +68,7 @@ namespace Orleans.Providers.Streams.Common
         /// </returns>
         public virtual IBatchContainer GetCurrent(out Exception exception)
         {
-            SimpleQueueCache.Log(logger, "SimpleQueueCacheCursor.GetCurrent: {0}", current);
+            SimpleQueueCache.Log(logger, "SimpleQueueCacheCursor.GetCurrent: {Current}", current);
 
             exception = null;
             return current;
@@ -77,7 +77,7 @@ namespace Orleans.Providers.Streams.Common
         /// <summary>
         /// Move to next message in the stream.
         /// If it returns false, there are no more messages.  The enumerator is still
-        ///  valid howerver and can be called again when more data has come in on this
+        ///  valid however and can be called again when more data has come in on this
         ///  stream.
         /// </summary>
         /// <returns></returns>
@@ -126,8 +126,6 @@ namespace Orleans.Providers.Streams.Common
                     string.Equals(batchContainer.StreamNamespace, streamIdentity.Namespace);
         }
 
-        #region IDisposable Members
-
         /// <summary>
         /// Performs application-defined tasks associated with freeing, releasing, or resetting unmanaged resources.
         /// </summary>
@@ -147,8 +145,6 @@ namespace Orleans.Providers.Streams.Common
                 cache.UnsetCursor(this, null);
             }
         }
-
-        #endregion
 
         /// <summary>
         /// Convert object to string

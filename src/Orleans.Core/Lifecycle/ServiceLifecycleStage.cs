@@ -7,7 +7,7 @@ namespace Orleans
     public static class ServiceLifecycleStage
     {
         /// <summary>
-        /// First stage in service's lifecycle
+        /// First valid stage in service's lifecycle
         /// </summary>
         public const int First = int.MinValue;
 
@@ -32,13 +32,18 @@ namespace Orleans
         public const int RuntimeGrainServices = 8000;
 
         /// <summary>
+        /// After runtime services have started.
+        /// </summary>
+        public const int AfterRuntimeGrainServices = 8100;
+
+        /// <summary>
         /// Start application layer services
         /// </summary>
         public const int ApplicationServices = 10000;
 
         /// <summary>
         /// Service will be active after this step.
-        /// It should only be used by the memebrship oracle 
+        /// It should only be used by the membership oracle 
         /// and the gateway, no other component should run
         /// at this stage
         /// </summary>
@@ -50,7 +55,7 @@ namespace Orleans
         public const int Active = 20000;
 
         /// <summary>
-        /// Last stage in service's lifecycle
+        /// Last valid stage in service's lifecycle
         /// </summary>
         public const int Last = int.MaxValue;
     }

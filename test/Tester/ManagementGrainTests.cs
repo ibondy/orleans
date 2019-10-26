@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -37,16 +37,16 @@ namespace UnitTests.Management
             {
                 // The ActivationCount tests rely on CounterStatistic, which is a shared static value, so isolation
                 // between silos is obtained using AppDomains.
-                builder.CreateSilo = AppDomainSiloHandle.Create;
+                builder.CreateSiloAsync = AppDomainSiloHandle.Create;
             }
         }
 
-        [Fact, TestCategory("BVT"), TestCategory("Functional"), TestCategory("Management")]
+        [Fact, TestCategory("BVT"), TestCategory("Management")]
         public async Task GetHosts()
         {
             if (HostedCluster.SecondarySilos.Count == 0)
             {
-                HostedCluster.StartAdditionalSilo();
+                await HostedCluster.StartAdditionalSiloAsync();
                 await HostedCluster.WaitForLivenessToStabilizeAsync();
             }
 
@@ -56,12 +56,12 @@ namespace UnitTests.Management
             Assert.Equal(numberOfActiveSilos, siloStatuses.Count);
         }
 
-        [Fact, TestCategory("BVT"), TestCategory("Functional"), TestCategory("Management")]
+        [Fact, TestCategory("BVT"), TestCategory("Management")]
         public async Task GetDetailedHosts()
         {
             if (HostedCluster.SecondarySilos.Count == 0)
             {
-                HostedCluster.StartAdditionalSilo();
+                await HostedCluster.StartAdditionalSiloAsync();
                 await HostedCluster.WaitForLivenessToStabilizeAsync();
             }
 
@@ -72,7 +72,7 @@ namespace UnitTests.Management
         }
 
 
-        [Fact, TestCategory("BVT"), TestCategory("Functional"), TestCategory("Management")]
+        [Fact, TestCategory("BVT"), TestCategory("Management")]
         public void GetSimpleGrainStatistics()
         {
             SimpleGrainStatistic[] stats = this.GetSimpleGrainStatisticsRunner("Initial");
@@ -83,13 +83,13 @@ namespace UnitTests.Management
             }
         }
 
-        [Fact, TestCategory("BVT"), TestCategory("Functional"), TestCategory("Management")]
+        [Fact, TestCategory("BVT"), TestCategory("Management")]
         public void GetSimpleGrainStatistics_ActivationCounts()
         {
             RunGetStatisticsTest<ISimpleGrain, SimpleGrain>(g => g.GetA().Wait());
         }
 
-        [Fact, TestCategory("BVT"), TestCategory("Functional"), TestCategory("Management")]
+        [Fact, TestCategory("BVT"), TestCategory("Management")]
         public void GetTestGrainStatistics_ActivationCounts()
         {
             RunGetStatisticsTest<ITestGrain, TestGrain>(g => g.GetKey().Wait());

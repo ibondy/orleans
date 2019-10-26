@@ -63,8 +63,6 @@ namespace Orleans.Runtime
 
         public ISiloRuntimeClient RuntimeClient => this.catalog.RuntimeClient;
 
-        #region Receive path
-
         /// <summary>
         /// Receive a new message:
         /// - validate order constraints, queue (or possibly redirect) if out of order
@@ -74,13 +72,14 @@ namespace Orleans.Runtime
         /// <param name="message"></param>
         public void ReceiveMessage(Message message)
         {
+            EventSourceUtils.EmitEvent(message, OrleansDispatcherEvent.ReceiveMessageAction);
             MessagingProcessingStatisticsGroup.OnDispatcherMessageReceive(message);
             // Don't process messages that have already timed out
             if (message.IsExpired)
             {
                 logger.Warn(ErrorCode.Dispatcher_DroppingExpiredMessage, "Dropping an expired message: {0}", message);
                 MessagingProcessingStatisticsGroup.OnDispatcherMessageProcessedError(message, "Expired");
-                message.DropExpiredMessage(MessagingStatisticsGroup.Phase.Dispatch);
+                message.DropExpiredMessage(this.logger, MessagingStatisticsGroup.Phase.Dispatch);
                 return;
             }
 
@@ -206,7 +205,8 @@ namespace Orleans.Runtime
             Exception exc, 
             string rejectInfo = null)
         {
-            if (message.Direction == Message.Directions.Request)
+            if (message.Direction == Message.Directions.Request
+                || (message.Direction == Message.Directions.OneWay && message.HasCacheInvalidationHeader))
             {
                 var str = String.Format("{0} {1}", rejectInfo ?? "", exc == null ? "" : exc.ToString());
                 MessagingStatisticsGroup.OnRejectedMessage(message);
@@ -226,7 +226,6 @@ namespace Orleans.Runtime
             if (rejection.Result == Message.ResponseTypes.Rejection)
             {
                 Transport.SendMessage(rejection);
-                rejection.ReleaseBodyAndHeaderBuffers();
             }
             else
             {
@@ -239,11 +238,11 @@ namespace Orleans.Runtime
         {
             lock (targetActivation)
             {
-                if (targetActivation.State == ActivationState.Invalid)
+                if (targetActivation.State == ActivationState.Invalid || targetActivation.State == ActivationState.FailedToActivate)
                 {
-                    logger.Warn(ErrorCode.Dispatcher_Receive_InvalidActivation,
-                        "Response received for invalid activation {0}", message);
-                    MessagingProcessingStatisticsGroup.OnDispatcherMessageProcessedError(message, "Ivalid");
+                    logger.Warn((int)ErrorCode.Dispatcher_Receive_InvalidActivation,
+                        "Response received for {State} activation {Message}", targetActivation.State, message);
+                    MessagingProcessingStatisticsGroup.OnDispatcherMessageProcessedError(message, "Invalid");
                     return;
                 }
                 MessagingProcessingStatisticsGroup.OnDispatcherMessageProcessedOk(message);
@@ -263,15 +262,7 @@ namespace Orleans.Runtime
         {
             lock (targetActivation)
             {
-                if (targetActivation.State == ActivationState.Invalid)
-                {
-                    ProcessRequestToInvalidActivation(
-                        message,
-                        targetActivation.Address,
-                        targetActivation.ForwardingAddress,
-                        "ReceiveRequest");
-                }
-                else if (!ActivationMayAcceptRequest(targetActivation, message))
+                if (!ActivationMayAcceptRequest(targetActivation, message))
                 {
                     // Check for deadlock before Enqueueing.
                     if (schedulingOptions.PerformDeadlockDetection && !message.TargetGrain.IsSystemTarget)
@@ -327,8 +318,8 @@ namespace Orleans.Runtime
         {
             bool canInterleave = 
                    incoming.IsAlwaysInterleave
-                || targetActivation.Running == null
-                || (targetActivation.Running.IsReadOnly && incoming.IsReadOnly)
+                || targetActivation.Blocking == null
+                || (targetActivation.Blocking.IsReadOnly && incoming.IsReadOnly)
                 || (schedulingOptions.AllowCallChainReentrancy && targetActivation.ActivationId.Equals(incoming.SendingActivation))
                 || catalog.CanInterleave(targetActivation.ActivationId, incoming);
 
@@ -400,23 +391,36 @@ namespace Orleans.Runtime
         {
             lock (targetActivation)
             {
-                if (targetActivation.Grain.IsGrain && message.IsUsingInterfaceVersions)
+                if (targetActivation.State == ActivationState.Invalid || targetActivation.State == ActivationState.FailedToActivate)
                 {
-                    var request = ((InvokeMethodRequest)message.GetDeserializedBody(this.serializationManager));
-                    var compatibilityDirector = compatibilityDirectorManager.GetDirector(request.InterfaceId);
-                    var currentVersion = catalog.GrainTypeManager.GetLocalSupportedVersion(request.InterfaceId);
-                    if (!compatibilityDirector.IsCompatible(request.InterfaceVersion, currentVersion))
-                        catalog.DeactivateActivationOnIdle(targetActivation);
-                }
-
-                if (targetActivation.State == ActivationState.Invalid || targetActivation.State == ActivationState.Deactivating)
-                {
-                    ProcessRequestToInvalidActivation(message, targetActivation.Address, targetActivation.ForwardingAddress, "HandleIncomingRequest");
+                    ProcessRequestToInvalidActivation(
+                        message,
+                        targetActivation.Address,
+                        targetActivation.ForwardingAddress,
+                        "HandleIncomingRequest",
+                        rejectMessages: targetActivation.State == ActivationState.FailedToActivate);
                     return;
                 }
 
+                if (targetActivation.Grain.IsGrain && message.IsUsingInterfaceVersions)
+                {
+                    var request = (InvokeMethodRequest)message.BodyObject;
+                    var compatibilityDirector = compatibilityDirectorManager.GetDirector(request.InterfaceId);
+                    var currentVersion = catalog.GrainTypeManager.GetLocalSupportedVersion(request.InterfaceId);
+                    if (!compatibilityDirector.IsCompatible(request.InterfaceVersion, currentVersion))
+                    {
+                        catalog.DeactivateActivationOnIdle(targetActivation);
+                        ProcessRequestToInvalidActivation(
+                            message,
+                            targetActivation.Address,
+                            targetActivation.ForwardingAddress,
+                            "HandleIncomingRequest - Incompatible request");
+                        return;
+                    }
+                }
+
                 // Now we can actually scheduler processing of this request
-                targetActivation.RecordRunning(message);
+                targetActivation.RecordRunning(message, message.IsAlwaysInterleave);
 
                 MessagingProcessingStatisticsGroup.OnDispatcherMessageProcessedOk(message);
                 scheduler.QueueWorkItem(new InvokeWorkItem(targetActivation, message, this, this.invokeWorkItemLogger), targetActivation.SchedulingContext);
@@ -446,6 +450,9 @@ namespace Orleans.Runtime
                 case ActivationData.EnqueueMessageResult.ErrorInvalidActivation:
                     ProcessRequestToInvalidActivation(message, targetActivation.Address, targetActivation.ForwardingAddress, "EnqueueRequest");
                     break;
+                case ActivationData.EnqueueMessageResult.ErrorActivateFailed:
+                    ProcessRequestToInvalidActivation(message, targetActivation.Address, targetActivation.ForwardingAddress, "EnqueueRequest", rejectMessages: true);
+                    break;
                 case ActivationData.EnqueueMessageResult.ErrorStuckActivation:
                     // Avoid any new call to this activation
                     catalog.DeactivateStuckActivation(targetActivation);
@@ -469,8 +476,9 @@ namespace Orleans.Runtime
             Message message, 
             ActivationAddress oldAddress, 
             ActivationAddress forwardingAddress, 
-            string failedOperation, 
-            Exception exc = null)
+            string failedOperation,
+            Exception exc = null,
+            bool rejectMessages = false)
         {
             // Just use this opportunity to invalidate local Cache Entry as well. 
             if (oldAddress != null)
@@ -478,9 +486,18 @@ namespace Orleans.Runtime
                 this.localGrainDirectory.InvalidateCacheEntry(oldAddress);
             }
             // IMPORTANT: do not do anything on activation context anymore, since this activation is invalid already.
-            scheduler.QueueWorkItem(new ClosureWorkItem(
-                () => TryForwardRequest(message, oldAddress, forwardingAddress, failedOperation, exc)),
-                catalog.SchedulingContext);
+            if (rejectMessages)
+            {
+                scheduler.QueueWorkItem(new ClosureWorkItem(
+                    () => RejectMessage(message, Message.RejectionTypes.Transient, exc, failedOperation)),
+                    catalog.SchedulingContext);
+            }
+            else
+            {
+                scheduler.QueueWorkItem(new ClosureWorkItem(
+                    () => TryForwardRequest(message, oldAddress, forwardingAddress, failedOperation, exc)),
+                    catalog.SchedulingContext);
+            }
         }
 
         internal void ProcessRequestsToInvalidActivation(
@@ -528,8 +545,18 @@ namespace Orleans.Runtime
             bool forwardingSucceded = true;
             try
             {
-
-                logger.Info(ErrorCode.Messaging_Dispatcher_TryForward, $"Trying to forward after {failedOperation}, ForwardCount = {message.ForwardCount}. Message {message}.");
+                if (logger.IsEnabled(LogLevel.Information))
+                {
+                    logger.LogInformation(
+                        (int)ErrorCode.Messaging_Dispatcher_TryForward,
+                        "Trying to forward after {FailedOperation}, ForwardCount = {ForwardCount}. OldAddress = {OldAddress}, ForwardingAddress = {ForwardingAddress}, Message {Message}, Exception: {Exception}.",
+                        failedOperation,
+                        message.ForwardCount,
+                        oldAddress,
+                        forwardingAddress,
+                        message,
+                        exc);
+                }
 
                 // if this message is from a different cluster and hit a non-existing activation
                 // in this cluster (which can happen due to stale cache or directory states)
@@ -560,11 +587,25 @@ namespace Orleans.Runtime
             }
             finally
             {
+                var sentRejection = false;
+
+                // If the message was a one-way message, send a cache invalidation response even if the message was successfully forwarded.
+                if (message.Direction == Message.Directions.OneWay)
+                {
+                    this.RejectMessage(
+                        message,
+                        Message.RejectionTypes.CacheInvalidation,
+                        exc,
+                        "OneWay message sent to invalid activation");
+                    sentRejection = true;
+                }
+
                 if (!forwardingSucceded)
                 {
                     var str = $"Forwarding failed: tried to forward message {message} for {message.ForwardCount} times after {failedOperation} to invalid activation. Rejecting now.";
                     logger.Warn(ErrorCode.Messaging_Dispatcher_TryForwardFailed, str, exc);
-                    RejectMessage(message, Message.RejectionTypes.Transient, exc, str);
+
+                    if (!sentRejection) RejectMessage(message, Message.RejectionTypes.Transient, exc, str);
                 }
             }
         }
@@ -576,16 +617,6 @@ namespace Orleans.Runtime
         internal void RerouteMessage(Message message)
         {
             ResendMessageImpl(message);
-        }
-
-        internal bool TryResendMessage(Message message)
-        {
-            if (!message.MayResend(this.messagingOptions.MaxResendCount)) return false;
-
-            message.ResendCount = message.ResendCount + 1;
-            MessagingProcessingStatisticsGroup.OnIgcMessageResend(message);
-            ResendMessageImpl(message);
-            return true;
         }
 
         internal bool TryForwardMessage(Message message, ActivationAddress forwardingAddress)
@@ -623,15 +654,14 @@ namespace Orleans.Runtime
         }
 
         // Forwarding is used by the receiver, usually when it cannot process the message and forwards it to another silo to perform the processing
-        // (got here due to outdated cache, silo is shutting down/overloaded, ...).
+        // (got here due to duplicate activation, outdated cache, silo is shutting down/overloaded, ...).
         private static bool MayForward(Message message, SiloMessagingOptions messagingOptions)
         {
-            return message.ForwardCount < messagingOptions.MaxForwardCount;
+            return message.ForwardCount < messagingOptions.MaxForwardCount
+                // allow one more forward hop for multi-cluster case
+                + (message.IsReturnedFromRemoteCluster ? 1 : 0)
+                ;
         }
-
-        #endregion
-
-        #region Send path
 
         /// <summary>
         /// Send an outgoing message, may complete synchronously
@@ -644,32 +674,6 @@ namespace Orleans.Runtime
         /// <param name="sendingActivation"></param>
         public Task AsyncSendMessage(Message message, ActivationData sendingActivation = null)
         {
-            Action<Exception> onAddressingFailure = ex =>
-            {
-                if (ShouldLogError(ex))
-                {
-                    logger.Error(ErrorCode.Dispatcher_SelectTarget_Failed, $"SelectTarget failed with {ex.Message}", ex);
-                }
-
-                MessagingProcessingStatisticsGroup.OnDispatcherMessageProcessedError(message, "SelectTarget failed");
-                RejectMessage(message, Message.RejectionTypes.Unrecoverable, ex);
-            };
-
-            Func<Task, Task> transportMessageAfterAddressing = async addressMessageTask =>
-            {
-                try
-                {
-                    await addressMessageTask;
-                }
-                catch (Exception ex)
-                {
-                    onAddressingFailure(ex);
-                    return;
-                }
-
-                TransportMessage(message, sendingActivation);
-            };
-
             try
             {
                 var messageAddressingTask = AddressMessage(message);
@@ -679,15 +683,41 @@ namespace Orleans.Runtime
                 }
                 else
                 {
-                    return transportMessageAfterAddressing(messageAddressingTask);
+                    return TransportMessageAferSending(messageAddressingTask, message, sendingActivation);
                 }
             }
             catch (Exception ex)
             {
-                onAddressingFailure(ex);
+                OnAddressingFailure(ex, message);
             }
 
             return Task.CompletedTask;
+
+            async Task TransportMessageAferSending(Task addressMessageTask, Message m, ActivationData activation)
+            {
+                try
+                {
+                    await addressMessageTask;
+                }
+                catch (Exception ex)
+                {
+                    OnAddressingFailure(ex, message);
+                    return;
+                }
+
+                TransportMessage(m, activation);
+            }
+
+            void OnAddressingFailure(Exception ex, Message m)
+            {
+                if (ShouldLogError(ex))
+                {
+                    logger.Error(ErrorCode.Dispatcher_SelectTarget_Failed, $"SelectTarget failed with {ex.Message}", ex);
+                }
+
+                MessagingProcessingStatisticsGroup.OnDispatcherMessageProcessedError(message, "SelectTarget failed");
+                RejectMessage(m, Message.RejectionTypes.Unrecoverable, ex);
+            }
         }
 
         private bool ShouldLogError(Exception ex)
@@ -723,7 +753,7 @@ namespace Orleans.Runtime
             var strategy = targetAddress.Grain.IsGrain ? catalog.GetGrainPlacementStrategy(targetAddress.Grain) : null;
 
             var request = message.IsUsingInterfaceVersions
-                ? message.GetDeserializedBody(this.serializationManager) as InvokeMethodRequest
+                ? message.BodyObject as InvokeMethodRequest
                 : null;
             var target = new PlacementTarget(
                 message.TargetGrain,
@@ -811,9 +841,6 @@ namespace Orleans.Runtime
             Transport.SendMessage(message);
         }
 
-        #endregion
-        #region Execution
-
         /// <summary>
         /// Invoked when an activation has finished a transaction and may be ready for additional transactions
         /// </summary>
@@ -873,7 +900,5 @@ namespace Orleans.Runtime
             }
             while (runLoop);
         }
-
-        #endregion
     }
 }

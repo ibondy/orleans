@@ -1,5 +1,6 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
 using Orleans.CodeGeneration;
+using Orleans.Internal;
 using Orleans.Serialization;
 using System;
 using System.Collections.Concurrent;
@@ -15,8 +16,7 @@ namespace Orleans.Runtime
         private const bool USE_DEBUG_CONTEXT = false;
         private const bool USE_DEBUG_CONTEXT_PARAMS = false;
         private static readonly ConcurrentDictionary<int, string> debugContexts = new ConcurrentDictionary<int, string>();
-
-        private readonly Action<Message, TaskCompletionSource<object>> responseCallbackDelegate;
+        
         private readonly Func<GrainReference, InvokeMethodRequest, string, InvokeMethodOptions, Task<object>> sendRequestDelegate;
         private readonly ILogger logger;
         private readonly IInternalGrainFactory internalGrainFactory;
@@ -34,7 +34,6 @@ namespace Orleans.Runtime
             IEnumerable<IOutgoingGrainCallFilter> outgoingCallFilters)
         {
             this.grainReferenceMethodCache = new InterfaceToImplementationMappingCache();
-            this.responseCallbackDelegate = this.ResponseCallback;
             this.sendRequestDelegate = SendRequest;
             this.logger = logger;
             this.RuntimeClient = runtimeClient;
@@ -59,15 +58,14 @@ namespace Orleans.Runtime
         /// <inheritdoc />
         public Task<T> InvokeMethodAsync<T>(GrainReference reference, int methodId, object[] arguments, InvokeMethodOptions options, SiloAddress silo)
         {
-            object[] argsDeepCopy = null;
             if (arguments != null)
             {
                 CheckForGrainArguments(arguments);
                 SetGrainCancellationTokensTarget(arguments, reference);
-                argsDeepCopy = (object[])this.serializationManager.DeepCopy(arguments);
+                this.serializationManager.DeepCopyElementsInPlace(arguments);
             }
 
-            var request = new InvokeMethodRequest(reference.InterfaceId, reference.InterfaceVersion, methodId, argsDeepCopy);
+            var request = new InvokeMethodRequest(reference.InterfaceId, reference.InterfaceVersion, methodId, arguments);
 
             if (IsUnordered(reference))
                 options |= InvokeMethodOptions.Unordered;
@@ -84,15 +82,17 @@ namespace Orleans.Runtime
 
                 return Task.FromResult(default(T));
             }
-
+#if !NETSTANDARD2_1
             resultTask = OrleansTaskExtentions.ConvertTaskViaTcs(resultTask);
+#endif
             return resultTask.ToTypedTask<T>();
         }
 
         public TGrainInterface Convert<TGrainInterface>(IAddressable grain)
-        {
-            return this.internalGrainFactory.Cast<TGrainInterface>(grain);
-        }
+            => this.internalGrainFactory.Cast<TGrainInterface>(grain);
+
+        public object Convert(IAddressable grain, Type interfaceType)
+            => this.internalGrainFactory.Cast(grain, interfaceType);
 
         private Task<object> InvokeMethod_Impl(GrainReference reference, InvokeMethodRequest request, string debugContext, InvokeMethodOptions options)
         {
@@ -131,8 +131,8 @@ namespace Orleans.Runtime
         {
             bool isOneWayCall = (options & InvokeMethodOptions.OneWay) != 0;
 
-            var resolver = isOneWayCall ? null : new TaskCompletionSource<object>();
-            this.RuntimeClient.SendRequest(reference, request, resolver, this.responseCallbackDelegate, debugContext, options, reference.GenericArguments);
+            var resolver = isOneWayCall ? null : new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+            this.RuntimeClient.SendRequest(reference, request, resolver, debugContext, options, reference.GenericArguments);
             return isOneWayCall ? null : resolver.Task;
         }
 
@@ -165,58 +165,6 @@ namespace Orleans.Runtime
                     "Error while invoking ClientInvokeCallback function " + this.RuntimeClient?.ClientInvokeCallback,
                     exc);
                 throw;
-            }
-        }
-
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Design", "CA1031:DoNotCatchGeneralExceptionTypes")]
-        private void ResponseCallback(Message message, TaskCompletionSource<object> context)
-        {
-            Response response;
-            if (message.Result != Message.ResponseTypes.Rejection)
-            {
-                try
-                {
-                    response = (Response)message.GetDeserializedBody(this.serializationManager);
-                }
-                catch (Exception exc)
-                {
-                    //  catch the Deserialize exception and break the promise with it.
-                    response = Response.ExceptionResponse(exc);
-                }
-            }
-            else
-            {
-                Exception rejection;
-                switch (message.RejectionType)
-                {
-                    case Message.RejectionTypes.GatewayTooBusy:
-                        rejection = new GatewayTooBusyException();
-                        break;
-                    case Message.RejectionTypes.DuplicateRequest:
-                        return; // Ignore duplicates
-
-                    default:
-                        rejection = message.GetDeserializedBody(this.serializationManager) as Exception;
-                        if (rejection == null)
-                        {
-                            if (string.IsNullOrEmpty(message.RejectionInfo))
-                            {
-                                message.RejectionInfo = "Unable to send request - no rejection info available";
-                            }
-                            rejection = new OrleansMessageRejectionException(message.RejectionInfo);
-                        }
-                        break;
-                }
-                response = Response.ExceptionResponse(rejection);
-            }
-
-            if (!response.ExceptionFlag)
-            {
-                context.TrySetResult(response.Data);
-            }
-            else
-            {
-                context.TrySetException(response.Exception);
             }
         }
 

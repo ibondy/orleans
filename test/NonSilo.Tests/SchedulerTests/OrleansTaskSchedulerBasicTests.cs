@@ -1,24 +1,15 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Orleans.Runtime;
-using Orleans.Runtime.Configuration;
 using Orleans.Runtime.Scheduler;
 using TestExtensions;
 using UnitTests.TesterInternal;
 using Xunit;
 using Xunit.Abstractions;
-using Orleans;
 using Orleans.TestingHost.Utils;
-using Orleans.Statistics;
-using Orleans.Hosting;
-using Microsoft.Extensions.Options;
-
-using Orleans.Runtime.TestHooks;
+using Orleans.Internal;
 
 // ReSharper disable ConvertToConstant.Local
 
@@ -34,14 +25,10 @@ namespace UnitTests.SchedulerTests
 
         public string DetailedStatus() { return ToString(); }
 
-        #region IEquatable<ISchedulingContext> Members
-
         public bool Equals(ISchedulingContext other)
         {
             return base.Equals(other);
         }
-
-        #endregion
     }
     
     [TestCategory("BVT"), TestCategory("Scheduler")]
@@ -49,7 +36,6 @@ namespace UnitTests.SchedulerTests
     {
         private readonly ITestOutputHelper output;
         private static readonly object Lockable = new object();
-        private readonly IHostEnvironmentStatistics performanceMetrics;
         private readonly UnitTestSchedulingContext rootContext;
         private readonly OrleansTaskScheduler scheduler;
         private readonly ILoggerFactory loggerFactory;
@@ -58,9 +44,8 @@ namespace UnitTests.SchedulerTests
             this.output = output;
             SynchronizationContext.SetSynchronizationContext(null);
             this.loggerFactory = InitSchedulerLogging();
-            this.performanceMetrics = new TestHooksHostEnvironmentStatistics();
             this.rootContext = new UnitTestSchedulingContext();
-            this.scheduler = TestInternalHelper.InitializeSchedulerForTesting(this.rootContext, this.performanceMetrics, this.loggerFactory);
+            this.scheduler = TestInternalHelper.InitializeSchedulerForTesting(this.rootContext, this.loggerFactory);
         }
         
         public void Dispose()
@@ -87,7 +72,7 @@ namespace UnitTests.SchedulerTests
         [Fact, TestCategory("AsynchronyPrimitives")]
         public void Async_Task_Start_ActivationTaskScheduler()
         {
-            ActivationTaskScheduler activationScheduler = this.scheduler.GetWorkItemGroup(this.rootContext).TaskRunner;
+            ActivationTaskScheduler activationScheduler = this.scheduler.GetWorkItemGroup(this.rootContext).TaskScheduler;
 
             int expected = 2;
             bool done = false;
@@ -106,7 +91,7 @@ namespace UnitTests.SchedulerTests
         {
             // This is not a great test because there's a 50/50 shot that it will work even if the scheduling
             // is completely and thoroughly broken and both closures are executed "simultaneously"
-            ActivationTaskScheduler activationScheduler = this.scheduler.GetWorkItemGroup(this.rootContext).TaskRunner;
+            ActivationTaskScheduler activationScheduler = this.scheduler.GetWorkItemGroup(this.rootContext).TaskScheduler;
 
             int n = 0;
             // ReSharper disable AccessToModifiedClosure
@@ -130,7 +115,7 @@ namespace UnitTests.SchedulerTests
         {
             // This is not a great test because there's a 50/50 shot that it will work even if the scheduling
             // is completely and thoroughly broken and both closures are executed "simultaneously"
-            ActivationTaskScheduler activationScheduler = this.scheduler.GetWorkItemGroup(this.rootContext).TaskRunner;
+            ActivationTaskScheduler activationScheduler = this.scheduler.GetWorkItemGroup(this.rootContext).TaskScheduler;
 
             int n = 0;
 
@@ -332,7 +317,7 @@ namespace UnitTests.SchedulerTests
         [Fact]
         public async Task Sched_Task_TaskWorkItem_CurrentScheduler()
         {
-            ActivationTaskScheduler activationScheduler = this.scheduler.GetWorkItemGroup(this.rootContext).TaskRunner;
+            ActivationTaskScheduler activationScheduler = this.scheduler.GetWorkItemGroup(this.rootContext).TaskScheduler;
 
             var result0 = new TaskCompletionSource<bool>();
             var result1 = new TaskCompletionSource<bool>();
@@ -380,7 +365,7 @@ namespace UnitTests.SchedulerTests
         [Fact]
         public async Task Sched_Task_ClosureWorkItem_SpecificScheduler()
         {
-            ActivationTaskScheduler activationScheduler = this.scheduler.GetWorkItemGroup(this.rootContext).TaskRunner;
+            ActivationTaskScheduler activationScheduler = this.scheduler.GetWorkItemGroup(this.rootContext).TaskScheduler;
 
             var result0 = new TaskCompletionSource<bool>();
             var result1 = new TaskCompletionSource<bool>();
@@ -504,7 +489,7 @@ namespace UnitTests.SchedulerTests
         }
 
         [Fact]
-        public void Sched_Task_SubTaskExecutionSequencing()
+        public async Task Sched_Task_SubTaskExecutionSequencing()
         {
             UnitTestSchedulingContext context = new UnitTestSchedulingContext();
             this.scheduler.RegisterWorkContext(context);
@@ -512,7 +497,8 @@ namespace UnitTests.SchedulerTests
             LogContext("Main-task " + Task.CurrentId);
 
             int n = 0;
-
+            TaskCompletionSource<int> finished = new TaskCompletionSource<int>();
+            var numCompleted = new[] {0};
             Action closure = () =>
             {
                 LogContext("ClosureWorkItem-task " + Task.CurrentId);
@@ -539,6 +525,10 @@ namespace UnitTests.SchedulerTests
                         LogContext("Sub-task " + id + "-ContinueWith");
 
                         this.output.WriteLine("Sub-task " + id + " Done");
+                        if (Interlocked.Increment(ref numCompleted[0]) == 10)
+                        {
+                            finished.SetResult(0);
+                        }
                     });
                 }
             };
@@ -549,7 +539,7 @@ namespace UnitTests.SchedulerTests
 
             // Pause to let things run
             this.output.WriteLine("Main-task sleeping");
-            Thread.Sleep(TimeSpan.FromSeconds(2));
+            await Task.WhenAny(Task.Delay(TimeSpan.FromSeconds(10)), finished.Task);
             this.output.WriteLine("Main-task awake");
 
             // N should be 10, because all tasks should execute serially
@@ -711,12 +701,7 @@ namespace UnitTests.SchedulerTests
             var filters = new LoggerFilterOptions();
             filters.AddFilter("Scheduler", LogLevel.Trace);
             filters.AddFilter("Scheduler.WorkerPoolThread", LogLevel.Trace);
-            var orleansConfig = new ClusterConfiguration();
-            orleansConfig.StandardLoad();
-            NodeConfiguration config = orleansConfig.CreateNodeConfigurationForSilo("Primary");
-            var loggerFactory = TestingUtils.CreateDefaultLoggerFactory(TestingUtils.CreateTraceFileName(config.SiloName, orleansConfig.Globals.ClusterId), filters);
-            StatisticsCollector.Initialize(StatisticsLevel.Info);
-            SchedulerStatisticsGroup.Init(loggerFactory);
+            var loggerFactory = TestingUtils.CreateDefaultLoggerFactory(TestingUtils.CreateTraceFileName("Silo", DateTime.Now.ToString("yyyyMMdd_hhmmss")), filters);
             return loggerFactory;
         }
     }

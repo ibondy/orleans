@@ -10,6 +10,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Orleans.CodeGeneration;
 using Orleans.Configuration;
+using Orleans.Internal;
 using Orleans.Messaging;
 using Orleans.Providers;
 using Orleans.Runtime;
@@ -23,17 +24,13 @@ namespace Orleans
     {
         internal static bool TestOnlyThrowExceptionDuringInit { get; set; }
 
-        private ILogger logger;
-        private ILogger callBackDataLogger;
-        private ILogger timerLogger;
-        private ClientMessagingOptions clientMessagingOptions;
+        private readonly ILogger logger;
+        private readonly ClientMessagingOptions clientMessagingOptions;
 
         private readonly ConcurrentDictionary<CorrelationId, CallbackData> callbacks;
-        private readonly ConcurrentDictionary<GuidId, LocalObjectData> localObjects;
+        private InvokableObjectManager localObjects;
 
         private ClientMessageCenter transport;
-        private bool listenForMessages;
-        private CancellationTokenSource listeningCts;
         private bool firstMessageReceived;
         private bool disposing;
 
@@ -43,33 +40,26 @@ namespace Orleans
         private GrainId clientId;
         private readonly GrainId handshakeClientId;
         private ThreadTrackingStatistic incomingMessagesThreadTimeTracking;
-        private readonly Func<Message, bool> tryResendMessage;
-        private readonly Action<Message> unregisterCallback;
 
-        private TimeSpan typeMapRefreshInterval;
+        private readonly TimeSpan typeMapRefreshInterval;
         private AsyncTaskSafeTimer typeMapRefreshTimer = null;
 
-        // initTimeout used to be AzureTableDefaultPolicies.TableCreationTimeout, which was 3 min
-        private static readonly TimeSpan initTimeout = TimeSpan.FromMinutes(1);
-
-        private static readonly TimeSpan resetTimeout = TimeSpan.FromMinutes(1);
+        private static readonly TimeSpan ResetTimeout = TimeSpan.FromMinutes(1);
 
         private const string BARS = "----------";
         
         public IInternalGrainFactory InternalGrainFactory { get; private set; }
 
-        /// <summary>
-        /// Response timeout.
-        /// </summary>
-        private TimeSpan responseTimeout;
-        
         private MessageFactory messageFactory;
         private IPAddress localAddress;
         private IGatewayListProvider gatewayListProvider;
         private readonly ILoggerFactory loggerFactory;
+        private readonly IOptions<StatisticsOptions> statisticsOptions;
+        private readonly ApplicationRequestsStatisticsGroup appRequestStatistics;
 
-        private SerializationManager serializationManager;
-
+        private readonly StageAnalysisStatisticsGroup schedulerStageStatistics;
+        private readonly SharedCallbackData sharedCallbackData;
+        private SafeTimer callbackTimer;
         public ActivationAddress CurrentActivationAddress
         {
             get;
@@ -81,9 +71,6 @@ namespace Orleans
             get { return CurrentActivationAddress.ToString(); }
         }
 
-        internal Task<IList<Uri>> GetGateways() =>
-            this.transport.GatewayManager.ListProvider.GetGateways();
-
         public IStreamProviderRuntime CurrentStreamProviderRuntime
         {
             get { return clientProviderRuntime; }
@@ -91,62 +78,80 @@ namespace Orleans
 
         public IGrainReferenceRuntime GrainReferenceRuntime { get; private set; }
 
+        internal ClientMessageCenter MessageCenter => this.transport;
+
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Reliability", "CA2000:Dispose objects before losing scope",
             Justification = "MessageCenter is IDisposable but cannot call Dispose yet as it lives past the end of this method call.")]
         public OutsideRuntimeClient(
             ILoggerFactory loggerFactory, 
             IOptions<ClientMessagingOptions> clientMessagingOptions,
-            IOptions<TypeManagementOptions> typeManagementOptions)
+            IOptions<TypeManagementOptions> typeManagementOptions,
+            IOptions<StatisticsOptions> statisticsOptions,
+            ApplicationRequestsStatisticsGroup appRequestStatistics,
+            StageAnalysisStatisticsGroup schedulerStageStatistics,
+            ClientStatisticsManager clientStatisticsManager)
         {
             this.loggerFactory = loggerFactory;
+            this.statisticsOptions = statisticsOptions;
+            this.appRequestStatistics = appRequestStatistics;
+            this.schedulerStageStatistics = schedulerStageStatistics;
+            this.ClientStatistics = clientStatisticsManager;
             this.logger = loggerFactory.CreateLogger<OutsideRuntimeClient>();
             this.handshakeClientId = GrainId.NewClientId();
-            tryResendMessage = TryResendMessage;
-            unregisterCallback = msg => UnRegisterCallback(msg.Id);
             callbacks = new ConcurrentDictionary<CorrelationId, CallbackData>();
-            localObjects = new ConcurrentDictionary<GuidId, LocalObjectData>();
-            this.callBackDataLogger = loggerFactory.CreateLogger<CallbackData>();
-            this.timerLogger = loggerFactory.CreateLogger<SafeTimer>();
             this.clientMessagingOptions = clientMessagingOptions.Value;
             this.typeMapRefreshInterval = typeManagementOptions.Value.TypeMapRefreshInterval;
-            this.responseTimeout = clientMessagingOptions.Value.ResponseTimeout;
+
+            this.sharedCallbackData = new SharedCallbackData(
+                msg => this.UnregisterCallback(msg.Id),
+                this.loggerFactory.CreateLogger<CallbackData>(),
+                this.clientMessagingOptions,
+                this.appRequestStatistics,
+                this.clientMessagingOptions.ResponseTimeout);
         }
 
         internal void ConsumeServices(IServiceProvider services)
         {
-            this.ServiceProvider = services;
-
-            var connectionLostHandlers = this.ServiceProvider.GetServices<ConnectionToClusterLostHandler>();
-            foreach (var handler in connectionLostHandlers)
-            {
-                this.ClusterConnectionLost += handler;
-            }
-
-            var clientInvokeCallbacks = this.ServiceProvider.GetServices<ClientInvokeCallback>();
-            foreach (var handler in clientInvokeCallbacks)
-            {
-                this.ClientInvokeCallback += handler;
-            }
-
-            this.InternalGrainFactory = this.ServiceProvider.GetRequiredService<IInternalGrainFactory>();
-            this.ClientStatistics = this.ServiceProvider.GetRequiredService<ClientStatisticsManager>();
-            this.serializationManager = this.ServiceProvider.GetRequiredService<SerializationManager>();
-            this.messageFactory = this.ServiceProvider.GetService<MessageFactory>();
-
-            this.GrainReferenceRuntime = this.ServiceProvider.GetRequiredService<IGrainReferenceRuntime>();
-
-            var statisticsOptions = this.ServiceProvider.GetRequiredService<IOptions<ClientStatisticsOptions>>().Value;
-            StatisticsCollector.Initialize(statisticsOptions.CollectionLevel);
-
-            BufferPool.InitGlobalBufferPool(this.clientMessagingOptions);
-
             try
             {
                 AppDomain.CurrentDomain.DomainUnload += CurrentDomain_DomainUnload;
 
-                clientProviderRuntime = this.ServiceProvider.GetRequiredService<ClientProviderRuntime>();
+                this.ServiceProvider = services;
 
-                this.localAddress = ConfigUtilities.GetLocalIPAddress(this.clientMessagingOptions.PreferredFamily, this.clientMessagingOptions.NetworkInterfaceName);
+                var connectionLostHandlers = this.ServiceProvider.GetServices<ConnectionToClusterLostHandler>();
+                foreach (var handler in connectionLostHandlers)
+                {
+                    this.ClusterConnectionLost += handler;
+                }
+
+                var clientInvokeCallbacks = this.ServiceProvider.GetServices<ClientInvokeCallback>();
+                foreach (var handler in clientInvokeCallbacks)
+                {
+                    this.ClientInvokeCallback += handler;
+                }
+
+                this.InternalGrainFactory = this.ServiceProvider.GetRequiredService<IInternalGrainFactory>();
+                this.ClientStatistics = this.ServiceProvider.GetRequiredService<ClientStatisticsManager>();
+                this.messageFactory = this.ServiceProvider.GetService<MessageFactory>();
+
+                var serializationManager = this.ServiceProvider.GetRequiredService<SerializationManager>();
+                this.localObjects = new InvokableObjectManager(
+                    this,
+                    serializationManager,
+                    this.loggerFactory.CreateLogger<InvokableObjectManager>());
+
+                var timerLogger = this.loggerFactory.CreateLogger<SafeTimer>();
+                var minTicks = Math.Min(this.clientMessagingOptions.ResponseTimeout.Ticks, TimeSpan.FromSeconds(1).Ticks);
+                var period = TimeSpan.FromTicks(minTicks);
+                this.callbackTimer = new SafeTimer(timerLogger, this.OnCallbackExpiryTick, null, period, period);
+                
+                this.GrainReferenceRuntime = this.ServiceProvider.GetRequiredService<IGrainReferenceRuntime>();
+
+                BufferPool.InitGlobalBufferPool(this.clientMessagingOptions);
+
+                this.clientProviderRuntime = this.ServiceProvider.GetRequiredService<ClientProviderRuntime>();
+
+                this.localAddress = this.clientMessagingOptions.LocalAddress ?? ConfigUtilities.GetLocalIPAddress(this.clientMessagingOptions.PreferredFamily, this.clientMessagingOptions.NetworkInterfaceName);
 
                 // Client init / sign-on message
                 logger.Info(ErrorCode.ClientInitializing, string.Format(
@@ -163,9 +168,10 @@ namespace Orleans
 
                 this.gatewayListProvider = this.ServiceProvider.GetRequiredService<IGatewayListProvider>();
 
-                if (StatisticsCollector.CollectThreadTimeTrackingStats)
+                var statisticsLevel = statisticsOptions.Value.CollectionLevel;
+                if (statisticsLevel.CollectThreadTimeTrackingStats())
                 {
-                    incomingMessagesThreadTimeTracking = new ThreadTrackingStatistic("ClientReceiver", this.loggerFactory);
+                    incomingMessagesThreadTimeTracking = new ThreadTrackingStatistic("ClientReceiver", this.loggerFactory, this.statisticsOptions, this.schedulerStageStatistics);
                 }
             }
             catch (Exception exc)
@@ -213,50 +219,22 @@ namespace Orleans
                         var gatewayProviderType = this.gatewayListProvider.GetType().GetParseableName();
                         var err = $"Could not find any gateway in {gatewayProviderType}. Orleans client cannot initialize.";
                         logger.Error(ErrorCode.GatewayManager_NoGateways, err);
-                        throw new OrleansException(err);
+                        throw new SiloUnavailableException(err);
                     }
                 },
                 retryFilter);
 
             var generation = -SiloAddress.AllocateNewGeneration(); // Client generations are negative
             transport = ActivatorUtilities.CreateInstance<ClientMessageCenter>(this.ServiceProvider, localAddress, generation, handshakeClientId);
+            transport.RegisterLocalMessageHandler(Message.Categories.Application, this.HandleMessage);
             transport.Start();
             CurrentActivationAddress = ActivationAddress.NewActivationAddress(transport.MyAddress, handshakeClientId);
 
-            listeningCts = new CancellationTokenSource();
-            var ct = listeningCts.Token;
-            listenForMessages = true;
-
             // Keeping this thread handling it very simple for now. Just queue task on thread pool.
-            Task.Run(
-                () =>
-                {
-                    while (listenForMessages && !ct.IsCancellationRequested)
-                    {
-                        try
-                        {
-                            RunClientMessagePump(ct);
-                        }
-                        catch (Exception exc)
-                        {
-                            logger.Error(ErrorCode.Runtime_Error_100326, "RunClientMessagePump has thrown exception", exc);
-                        }
-                    }
-                },
-                ct).Ignore();
+            Task.Run(this.RunClientMessagePump).Ignore();
 
-            await ExecuteWithRetries(async () =>
-                {
-                    var originalTimeout = this.GetResponseTimeout();
-                    try
-                    {
-                        await RefreshGrainTypeResolver(null);
-                    }
-                    finally
-                    {
-                        this.SetResponseTimeout(originalTimeout);
-                    }
-                },
+            await ExecuteWithRetries(
+                async () => this.GrainTypeResolver = await transport.GetGrainTypeResolver(this.InternalGrainFactory),
                 retryFilter);
 
             this.typeMapRefreshTimer = new AsyncTaskSafeTimer(
@@ -296,315 +274,100 @@ namespace Orleans
             }
             catch(Exception ex)
             {
-                this.logger.Warn(ErrorCode.TypeManager_GetClusterGrainTypeResolverError, "Refresh the GrainTypeResolver failed. WIll be retried after", ex);
+                this.logger.Warn(ErrorCode.TypeManager_GetClusterGrainTypeResolverError, "Refresh the GrainTypeResolver failed. Will be retried after", ex);
             }
         }
 
-        private void RunClientMessagePump(CancellationToken ct)
+        private async Task RunClientMessagePump()
         {
-            if (StatisticsCollector.CollectThreadTimeTrackingStats)
-            {
-                incomingMessagesThreadTimeTracking.OnStartExecution();
-            }
-            while (listenForMessages)
-            {
-                var message = transport.WaitMessage(Message.Categories.Application, ct);
+            incomingMessagesThreadTimeTracking?.OnStartExecution();
 
-                if (message == null) // if wait was cancelled
-                    break;
-#if TRACK_DETAILED_STATS
-                        if (StatisticsCollector.CollectThreadTimeTrackingStats)
-                        {
-                            incomingMessagesThreadTimeTracking.OnStartProcessing();
-                        }
-#endif
+            var reader = transport.GetReader(Message.Categories.Application);
 
-                // when we receive the first message, we update the
-                // clientId for this client because it may have been modified to
-                // include the cluster name
-                if (!firstMessageReceived)
-                {
-                    firstMessageReceived = true;
-                    if (!handshakeClientId.Equals(message.TargetGrain))
-                    {
-                        clientId = message.TargetGrain;
-                        transport.UpdateClientId(clientId);
-                        CurrentActivationAddress = ActivationAddress.GetAddress(transport.MyAddress, clientId, CurrentActivationAddress.Activation);
-                    }
-                    else
-                    {
-                        clientId = handshakeClientId;
-                    }
-                }
-
-                switch (message.Direction)
-                {
-                    case Message.Directions.Response:
-                        {
-                            ReceiveResponse(message);
-                            break;
-                        }
-                    case Message.Directions.OneWay:
-                    case Message.Directions.Request:
-                        {
-                            this.DispatchToLocalObject(message);
-                            break;
-                        }
-                    default:
-                        logger.Error(ErrorCode.Runtime_Error_100327, $"Message not supported: {message}.");
-                        break;
-                }
-#if TRACK_DETAILED_STATS
-                        if (StatisticsCollector.CollectThreadTimeTrackingStats)
-                        {
-                            incomingMessagesThreadTimeTracking.OnStopProcessing();
-                            incomingMessagesThreadTimeTracking.IncrementNumberOfProcessed();
-                        }
-#endif
-            }
-            if (StatisticsCollector.CollectThreadTimeTrackingStats)
-            {
-                incomingMessagesThreadTimeTracking.OnStopExecution();
-            }
-        }
-
-        private void DispatchToLocalObject(Message message)
-        {
-            LocalObjectData objectData;
-            GuidId observerId = message.TargetObserverId;
-            if (observerId == null)
-            {
-                logger.Error(
-                    ErrorCode.ProxyClient_OGC_TargetNotFound_2,
-                    $"Did not find TargetObserverId header in the message = {message}. A request message to a client is expected to have an observerId.");
-                return;
-            }
-
-            if (localObjects.TryGetValue(observerId, out objectData))
-                this.InvokeLocalObjectAsync(objectData, message);
-            else
-            {
-                logger.Error(
-                    ErrorCode.ProxyClient_OGC_TargetNotFound,
-                    $"Unexpected target grain in request: {message.TargetGrain}. Message={message}");
-            }
-        }
-
-        private void InvokeLocalObjectAsync(LocalObjectData objectData, Message message)
-        {
-            var obj = (IAddressable)objectData.LocalObject.Target;
-            if (obj == null)
-            {
-                //// Remove from the dictionary record for the garbage collected object? But now we won't be able to detect invalid dispatch IDs anymore.
-                logger.Warn(ErrorCode.Runtime_Error_100162,
-                    $"Object associated with Observer ID {objectData.ObserverId} has been garbage collected. Deleting object reference and unregistering it. Message = {message}");
-
-                LocalObjectData ignore;
-                // Try to remove. If it's not there, we don't care.
-                localObjects.TryRemove(objectData.ObserverId, out ignore);
-                return;
-            }
-
-            bool start;
-            lock (objectData.Messages)
-            {
-                objectData.Messages.Enqueue(message);
-                start = !objectData.Running;
-                objectData.Running = true;
-            }
-            if (logger.IsEnabled(LogLevel.Debug)) logger.Debug("InvokeLocalObjectAsync {0} start {1}", message, start);
-            if (start)
-            {
-                // we use Task.Run() to ensure that the message pump operates asynchronously
-                // with respect to the current thread. see
-                // http://channel9.msdn.com/Events/TechEd/Europe/2013/DEV-B317#fbid=aIWUq0ssW74
-                // at position 54:45.
-                //
-                // according to the information posted at:
-                // http://stackoverflow.com/questions/12245935/is-task-factory-startnew-guaranteed-to-use-another-thread-than-the-calling-thr
-                // this idiom is dependent upon the a TaskScheduler not implementing the
-                // override QueueTask as task inlining (as opposed to queueing). this seems
-                // implausible to the author, since none of the .NET schedulers do this and
-                // it is considered bad form (the OrleansTaskScheduler does not do this).
-                //
-                // if, for some reason this doesn't hold true, we can guarantee what we
-                // want by passing a placeholder continuation token into Task.StartNew()
-                // instead. i.e.:
-                //
-                // return Task.StartNew(() => ..., new CancellationToken());
-                Func<Task> asyncFunc =
-                    async () =>
-                        await this.LocalObjectMessagePumpAsync(objectData);
-                Task.Run(asyncFunc).Ignore();
-            }
-        }
-
-        private async Task LocalObjectMessagePumpAsync(LocalObjectData objectData)
-        {
             while (true)
             {
                 try
                 {
-                    Message message;
-                    lock (objectData.Messages)
+                    var moreTask = reader.WaitToReadAsync();
+                    var more = moreTask.IsCompletedSuccessfully ? moreTask.Result : await moreTask.ConfigureAwait(false);
+                    if (!more)
                     {
-                        if (objectData.Messages.Count == 0)
-                        {
-                            objectData.Running = false;
-                            break;
-                        }
-                        message = objectData.Messages.Dequeue();
+                        incomingMessagesThreadTimeTracking?.OnStopExecution();
+                        return;
                     }
 
-                    if (ExpireMessageIfExpired(message, MessagingStatisticsGroup.Phase.Invoke))
-                        continue;
-
-                    RequestContextExtensions.Import(message.RequestContextData);
-                    var request = (InvokeMethodRequest)message.GetDeserializedBody(this.serializationManager);
-                    var targetOb = (IAddressable)objectData.LocalObject.Target;
-                    object resultObject = null;
-                    Exception caught = null;
-                    try
+                    // Continue reading if there're more messages
+                    while (reader.TryRead(out var message))
                     {
-                        // exceptions thrown within this scope are not considered to be thrown from user code
-                        // and not from runtime code.
-                        var resultPromise = objectData.Invoker.Invoke(targetOb, request);
-                        if (resultPromise != null) // it will be null for one way messages
-                        {
-                            resultObject = await resultPromise;
-                        }
+                        if (message == null) continue;
+                        this.HandleMessage(message);
                     }
-                    catch (Exception exc)
-                    {
-                        // the exception needs to be reported in the log or propagated back to the caller.
-                        caught = exc;
-                    }
-                    if (caught != null)
-                        this.ReportException(message, caught);
-                    else if (message.Direction != Message.Directions.OneWay)
-                        await this.SendResponseAsync(message, resultObject);
                 }
-                catch (Exception)
+                catch (Exception exception)
                 {
-                    // ignore, keep looping.
+                    this.logger.Error(ErrorCode.Runtime_Error_100326, "RunClientMessagePump has thrown exception. Continuing.", exception);
                 }
             }
         }
 
-        private static bool ExpireMessageIfExpired(Message message, MessagingStatisticsGroup.Phase phase)
+        private void HandleMessage(Message message)
         {
-            if (message.IsExpired)
+            // when we receive the first message, we update the
+            // clientId for this client because it may have been modified to
+            // include the cluster name
+            if (!firstMessageReceived)
             {
-                message.DropExpiredMessage(phase);
-                return true;
-            }
-            return false;
-        }
-
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Design", "CA1031:DoNotCatchGeneralExceptionTypes")]
-        private Task
-            SendResponseAsync(
-                Message message,
-                object resultObject)
-        {
-            if (ExpireMessageIfExpired(message, MessagingStatisticsGroup.Phase.Respond))
-                return Task.CompletedTask;
-
-            object deepCopy = null;
-            try
-            {
-                // we're expected to notify the caller if the deep copy failed.
-                deepCopy = this.serializationManager.DeepCopy(resultObject);
-            }
-            catch (Exception exc2)
-            {
-                SendResponse(message, Response.ExceptionResponse(exc2));
-                logger.Warn(
-                    ErrorCode.ProxyClient_OGC_SendResponseFailed,
-                    "Exception trying to send a response.", exc2);
-                return Task.CompletedTask;
+                firstMessageReceived = true;
+                if (!handshakeClientId.Equals(message.TargetGrain))
+                {
+                    clientId = message.TargetGrain;
+                    transport.UpdateClientId(clientId);
+                    CurrentActivationAddress = ActivationAddress.GetAddress(transport.MyAddress, clientId, CurrentActivationAddress.Activation);
+                }
+                else
+                {
+                    clientId = handshakeClientId;
+                }
             }
 
-            // the deep-copy succeeded.
-            SendResponse(message, new Response(deepCopy));
-            return Task.CompletedTask;
-        }
-
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Design", "CA1031:DoNotCatchGeneralExceptionTypes")]
-        private void ReportException(Message message, Exception exception)
-        {
-            var request = (InvokeMethodRequest)message.GetDeserializedBody(this.serializationManager);
             switch (message.Direction)
             {
-                default:
-                    throw new InvalidOperationException();
-                case Message.Directions.OneWay:
+                case Message.Directions.Response:
                     {
-                        logger.Error(
-                            ErrorCode.ProxyClient_OGC_UnhandledExceptionInOneWayInvoke,
-                            $"Exception during invocation of notification method {request.MethodId}, interface {request.InterfaceId}. Ignoring exception because this is a one way request.",
-                            exception);
+                        ReceiveResponse(message);
                         break;
                     }
+                case Message.Directions.OneWay:
                 case Message.Directions.Request:
                     {
-                        Exception deepCopy = null;
-                        try
-                        {
-                            // we're expected to notify the caller if the deep copy failed.
-                            deepCopy = (Exception)this.serializationManager.DeepCopy(exception);
-                        }
-                        catch (Exception ex2)
-                        {
-                            SendResponse(message, Response.ExceptionResponse(ex2));
-                            logger.Warn(
-                                ErrorCode.ProxyClient_OGC_SendExceptionResponseFailed,
-                                "Exception trying to send an exception response", ex2);
-                            return;
-                        }
-                        // the deep-copy succeeded.
-                        var response = Response.ExceptionResponse(deepCopy);
-                        SendResponse(message, response);
+                        this.localObjects.Dispatch(message);
                         break;
                     }
+                default:
+                    logger.Error(ErrorCode.Runtime_Error_100327, $"Message not supported: {message}.");
+                    break;
             }
         }
 
-        private void SendResponse(Message request, Response response)
+        public void SendResponse(Message request, Response response)
         {
             var message = this.messageFactory.CreateResponseMessage(request);
+            EventSourceUtils.EmitEvent(message, OrleansOutsideRuntimeClientEvent.SendResponseAction);
             message.BodyObject = response;
 
             transport.SendMessage(message);
         }
 
-        /// <summary>
-        /// For testing only.
-        /// </summary>
-        public void Disconnect()
-        {
-            transport.Disconnect();
-        }
-
-        /// <summary>
-        /// For testing only.
-        /// </summary>
-        public void Reconnect()
-        {
-            transport.Reconnect();
-        }
-
-        #region Implementation of IRuntimeClient
-
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Reliability", "CA2000:Dispose objects before losing scope",
             Justification = "CallbackData is IDisposable but instances exist beyond lifetime of this method so cannot Dispose yet.")]
-        public void SendRequest(GrainReference target, InvokeMethodRequest request, TaskCompletionSource<object> context, Action<Message, TaskCompletionSource<object>> callback, string debugContext = null, InvokeMethodOptions options = InvokeMethodOptions.None, string genericArguments = null)
+        public void SendRequest(GrainReference target, InvokeMethodRequest request, TaskCompletionSource<object> context, string debugContext = null, InvokeMethodOptions options = InvokeMethodOptions.None, string genericArguments = null)
         {
             var message = this.messageFactory.CreateMessage(request, options);
-            SendRequestMessage(target, message, context, callback, debugContext, options, genericArguments);
+            EventSourceUtils.EmitEvent(message, OrleansOutsideRuntimeClientEvent.SendRequestAction);
+            SendRequestMessage(target, message, context, debugContext, options, genericArguments);
         }
 
-        private void SendRequestMessage(GrainReference target, Message message, TaskCompletionSource<object> context, Action<Message, TaskCompletionSource<object>> callback, string debugContext = null, InvokeMethodOptions options = InvokeMethodOptions.None, string genericArguments = null)
+        private void SendRequestMessage(GrainReference target, Message message, TaskCompletionSource<object> context, string debugContext = null, InvokeMethodOptions options = InvokeMethodOptions.None, string genericArguments = null)
         {
             var targetGrainId = target.GrainId;
             var oneWay = (options & InvokeMethodOptions.OneWay) != 0;
@@ -636,61 +399,35 @@ namespace Orleans
             if (message.IsExpirableMessage(this.clientMessagingOptions.DropExpiredMessages))
             {
                 // don't set expiration for system target messages.
-                message.TimeToLive = responseTimeout;
+                message.TimeToLive = this.clientMessagingOptions.ResponseTimeout;
             }
 
             if (!oneWay)
             {
-                var callbackData = new CallbackData(
-                    callback,
-                    tryResendMessage,
-                    context,
-                    message,
-                    unregisterCallback,
-                    this.clientMessagingOptions,
-                    this.callBackDataLogger,
-                    this.timerLogger);
+                var callbackData = new CallbackData(this.sharedCallbackData, context, message);
                 callbacks.TryAdd(message.Id, callbackData);
-                callbackData.StartTimer(responseTimeout);
             }
 
             if (logger.IsEnabled(LogLevel.Trace)) logger.Trace("Send {0}", message);
             transport.SendMessage(message);
         }
 
-        private bool TryResendMessage(Message message)
-        {
-            if (!message.MayResend(this.clientMessagingOptions.MaxResendCount))
-            {
-                return false;
-            }
-
-            if (logger.IsEnabled(LogLevel.Debug)) logger.Debug("Resend {0}", message);
-
-            message.ResendCount = message.ResendCount + 1;
-            message.TargetHistory = message.GetTargetHistory();
-
-            if (!message.TargetGrain.IsSystemTarget)
-            {
-                message.TargetActivation = null;
-                message.TargetSilo = null;
-                message.ClearTargetAddress();
-            }
-
-            transport.SendMessage(message);
-            return true;
-        }
-
         public void ReceiveResponse(Message response)
         {
+            EventSourceUtils.EmitEvent(response, OrleansOutsideRuntimeClientEvent.ReceiveResponseAction);
+
             if (logger.IsEnabled(LogLevel.Trace)) logger.Trace("Received {0}", response);
 
             // ignore duplicate requests
-            if (response.Result == Message.ResponseTypes.Rejection && response.RejectionType == Message.RejectionTypes.DuplicateRequest)
+            if (response.Result == Message.ResponseTypes.Rejection
+                && (response.RejectionType == Message.RejectionTypes.DuplicateRequest
+                 || response.RejectionType == Message.RejectionTypes.CacheInvalidation))
+            {
                 return;
-
+            }
+            
             CallbackData callbackData;
-            var found = callbacks.TryGetValue(response.Id, out callbackData);
+            var found = callbacks.TryRemove(response.Id, out callbackData);
             if (found)
             {
                 // We need to import the RequestContext here as well.
@@ -704,7 +441,7 @@ namespace Orleans
             }
         }
 
-        private void UnRegisterCallback(CorrelationId id)
+        private void UnregisterCallback(CorrelationId id)
         {
             CallbackData ignore;
             callbacks.TryRemove(id, out ignore);
@@ -732,32 +469,14 @@ namespace Orleans
             {
                 if (clientProviderRuntime != null)
                 {
-                    clientProviderRuntime.Reset(cleanup).WaitWithThrow(resetTimeout);
+                    clientProviderRuntime.Reset(cleanup).WaitWithThrow(ResetTimeout);
                 }
             }, logger, "Client.clientProviderRuntime.Reset");
             Utils.SafeExecute(() =>
             {
-                if (StatisticsCollector.CollectThreadTimeTrackingStats)
-                {
-                    incomingMessagesThreadTimeTracking.OnStopExecution();
-                }
+                incomingMessagesThreadTimeTracking?.OnStopExecution();
             }, logger, "Client.incomingMessagesThreadTimeTracking.OnStopExecution");
-            Utils.SafeExecute(() =>
-            {
-                if (transport != null)
-                {
-                    transport.PrepareToStop();
-                }
-            }, logger, "Client.PrepareToStop-Transport");
 
-            listenForMessages = false;
-            Utils.SafeExecute(() =>
-            {
-                if (listeningCts != null)
-                {
-                    listeningCts.Cancel();
-                }
-            }, logger, "Client.Stop-ListeningCTS");
             Utils.SafeExecute(() =>
                 {
                     if (transport != null)
@@ -794,7 +513,7 @@ namespace Orleans
             {
                 if (clientProviderRuntime != null)
                 {
-                    clientProviderRuntime.Reset().WaitWithThrow(resetTimeout);
+                    clientProviderRuntime.Reset().WaitWithThrow(ResetTimeout);
                 }
             }
             catch (Exception) { }
@@ -802,15 +521,11 @@ namespace Orleans
             Utils.SafeExecute(() => this.Dispose());
         }
 
-        public void SetResponseTimeout(TimeSpan timeout)
-        {
-            responseTimeout = timeout;
-        }
+        /// <inheritdoc />
+        public TimeSpan GetResponseTimeout() => this.sharedCallbackData.ResponseTimeout;
 
-        public TimeSpan GetResponseTimeout()
-        {
-            return responseTimeout;
-        }
+        /// <inheritdoc />
+        public void SetResponseTimeout(TimeSpan timeout) => this.sharedCallbackData.ResponseTimeout = timeout;
 
         public GrainReference CreateObjectReference(IAddressable obj, IGrainMethodInvoker invoker)
         {
@@ -821,7 +536,7 @@ namespace Orleans
                 throw new ArgumentException("Argument must not be a grain class.", nameof(obj));
 
             GrainReference gr = GrainReference.NewObserverGrainReference(clientId, GuidId.GetNewGuidId(), this.GrainReferenceRuntime);
-            if (!localObjects.TryAdd(gr.ObserverId, new LocalObjectData(obj, gr.ObserverId, invoker)))
+            if (!localObjects.TryRegister(obj, gr.ObserverId, invoker))
             {
                 throw new ArgumentException(String.Format("Failed to add new observer {0} to localObjects collection.", gr), "gr");
             }
@@ -834,12 +549,9 @@ namespace Orleans
                 throw new ArgumentException("Argument reference is not a grain reference.");
 
             var reference = (GrainReference)obj;
-            LocalObjectData ignore;
-            if (!localObjects.TryRemove(reference.ObserverId, out ignore))
+            if (!localObjects.TryDeregister(reference.ObserverId))
                 throw new ArgumentException("Reference is not associated with a local object.", "reference");
         }
-
-        #endregion Implementation of IRuntimeClient
 
         private void CurrentDomain_DomainUnload(object sender, EventArgs e)
         {
@@ -859,29 +571,12 @@ namespace Orleans
             return string.Format("<AppDomain.Id={0}, AppDomain.FriendlyName={1}>", AppDomain.CurrentDomain.Id, AppDomain.CurrentDomain.FriendlyName);
         }
 
-        private class LocalObjectData
-        {
-            internal WeakReference LocalObject { get; private set; }
-            internal IGrainMethodInvoker Invoker { get; private set; }
-            internal GuidId ObserverId { get; private set; }
-            internal Queue<Message> Messages { get; private set; }
-            internal bool Running { get; set; }
-
-            internal LocalObjectData(IAddressable obj, GuidId observerId, IGrainMethodInvoker invoker)
-            {
-                LocalObject = new WeakReference(obj);
-                ObserverId = observerId;
-                Invoker = invoker;
-                Messages = new Queue<Message>();
-                Running = false;
-            }
-        }
-
         public void Dispose()
         {
             if (this.disposing) return;
             this.disposing = true;
-
+            
+            Utils.SafeExecute(() => this.callbackTimer?.Dispose());
             Utils.SafeExecute(() =>
             {
                 if (typeMapRefreshTimer != null)
@@ -890,12 +585,6 @@ namespace Orleans
                     typeMapRefreshTimer = null;
                 }
             });
-
-            if (listeningCts != null)
-            {
-                Utils.SafeExecute(() => listeningCts.Dispose());
-                listeningCts = null;
-            }
             
             Utils.SafeExecute(() => transport?.Dispose());
             if (ClientStatistics != null)
@@ -929,6 +618,9 @@ namespace Orleans
         public event ConnectionToClusterLostHandler ClusterConnectionLost;
 
         /// <inheritdoc />
+        public event GatewayCountChangedHandler GatewayCountChanged;
+
+        /// <inheritdoc />
         public void NotifyClusterConnectionLost()
         {
             try
@@ -938,6 +630,30 @@ namespace Orleans
             catch (Exception ex)
             {
                 this.logger.Error(ErrorCode.ClientError, "Error when sending cluster disconnection notification", ex);
+            }
+        }
+
+        /// <inheritdoc />
+        public void NotifyGatewayCountChanged(int currentNumberOfGateways, int previousNumberOfGateways)
+        {
+            try
+            {
+                this.GatewayCountChanged?.Invoke(this, new GatewayCountChangedEventArgs(currentNumberOfGateways, previousNumberOfGateways));
+            }
+            catch (Exception ex)
+            {
+                this.logger.Error(ErrorCode.ClientError, "Error when sending gateway count changed notification", ex);
+            }
+        }
+
+        private void OnCallbackExpiryTick(object state)
+        {
+            var currentStopwatchTicks = Stopwatch.GetTimestamp();
+            foreach (var pair in callbacks)
+            {
+                var callback = pair.Value;
+                if (callback.IsCompleted) continue;
+                if (callback.IsExpired(currentStopwatchTicks)) callback.OnTimeout(this.clientMessagingOptions.ResponseTimeout);
             }
         }
     }
