@@ -49,6 +49,7 @@ public abstract class AdoNetStreamingTests : TestClusterPerTest
     protected AdoNetStreamingTests(string invariant)
     {
         _invariant = invariant;
+        RelationalStorageForTesting.CheckPreconditionsOrThrow(_invariant);
     }
 
     private static RelationalStorageForTesting _testing;
@@ -169,6 +170,6 @@ public abstract class AdoNetStreamingTests : TestClusterPerTest
     {
         var multiRunner = new MultipleStreamsTestRunner(InternalClient, AdoNetStreamProviderName, 17, false);
 
-        await multiRunner.StreamTest_MultipleStreams_ManyDifferent_ManyProducerGrainsManyConsumerGrains(HostedCluster.StartAdditionalSilo);
+        await multiRunner.StreamTest_MultipleStreams_ManyDifferent_ManyProducerGrainsManyConsumerGrains(() => HostedCluster.StartAdditionalSilo());
     }
 }

@@ -12,7 +12,7 @@ namespace Orleans.Transactions.TestKit
     {
         protected Func<Task<ITransactionalStateStorage<TState>>> stateStorageFactory;
         protected Func<int, TState> stateFactory;
-        protected Func<EquivalencyAssertionOptions<TState>, EquivalencyAssertionOptions<TState>> assertConfig;
+        protected Func<EquivalencyOptions<TState>, EquivalencyOptions<TState>> assertConfig;
 
         /// <summary>
         /// Constructor
@@ -22,12 +22,12 @@ namespace Orleans.Transactions.TestKit
         /// <param name="stateFactory">factory to create TState for test</param>
         /// <param name="grainFactory">grain Factory needed for test runner</param>
         /// <param name="testOutput">test output to helpful messages</param>
-        /// <param name="assertConfig">A reference to the FluentAssertions.Equivalency.EquivalencyAssertionOptions`1
+        /// <param name="assertConfig">A reference to the FluentAssertions.Equivalency.EquivalencyOptions`1
         ///     configuration object that can be used to influence the way the object graphs
         ///     are compared</param>
         protected TransactionalStateStorageTestRunner(Func<Task<ITransactionalStateStorage<TState>>> stateStorageFactory, Func<int, TState> stateFactory, 
             IGrainFactory grainFactory, Action<string> testOutput,
-            Func<EquivalencyAssertionOptions<TState>, EquivalencyAssertionOptions<TState>> assertConfig = null)
+            Func<EquivalencyOptions<TState>, EquivalencyOptions<TState>> assertConfig = null)
             :base(grainFactory, testOutput)
         {
             this.stateStorageFactory = stateStorageFactory;
@@ -147,7 +147,7 @@ namespace Orleans.Transactions.TestKit
                 actual.Should().BeEquivalentTo(expected, assertConfig);
         }
 
-        private PendingTransactionState<TState> MakePendingState(long seqno, TState val, bool tm)
+        private static PendingTransactionState<TState> MakePendingState(long seqno, TState val, bool tm)
         {
             var result = new PendingTransactionState<TState>()
             {
@@ -161,7 +161,7 @@ namespace Orleans.Transactions.TestKit
             return result;
         }
 
-        private ParticipantId MakeParticipantId()
+        private static ParticipantId MakeParticipantId()
         {
             return new ParticipantId(
                                     "tm",
@@ -170,7 +170,7 @@ namespace Orleans.Transactions.TestKit
                                     ParticipantId.Role.Resource | ParticipantId.Role.Manager);
         }
 
-        private Dictionary<Guid, CommitRecord> MakeCommitRecords(int count, int size)
+        private static Dictionary<Guid, CommitRecord> MakeCommitRecords(int count, int size)
         {
             var result = new Dictionary<Guid, CommitRecord>();
             for (int j = 0; j < size; j++)

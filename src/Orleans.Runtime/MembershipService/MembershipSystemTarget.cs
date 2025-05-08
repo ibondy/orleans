@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Orleans.Internal;
 using Orleans.Runtime.Scheduler;
 
 namespace Orleans.Runtime.MembershipService
@@ -16,17 +15,15 @@ namespace Orleans.Runtime.MembershipService
 
         public MembershipSystemTarget(
             MembershipTableManager membershipTableManager,
-            ILocalSiloDetails localSiloDetails,
-            ILoggerFactory loggerFactory,
             ILogger<MembershipSystemTarget> log,
             IInternalGrainFactory grainFactory,
-            Catalog catalog)
-            : base(Constants.MembershipServiceType, localSiloDetails.SiloAddress, loggerFactory)
+            SystemTargetShared shared)
+            : base(Constants.MembershipServiceType, shared)
         {
             this.membershipTableManager = membershipTableManager;
             this.log = log;
             this.grainFactory = grainFactory;
-            catalog.RegisterSystemTarget(this);
+            shared.ActivationDirectory.RecordNewTarget(this);
         }
 
         public Task Ping(int pingNumber) => Task.CompletedTask;
@@ -158,10 +155,10 @@ namespace Orleans.Runtime.MembershipService
             }
             catch (Exception exception)
             {
-                this.log.LogError(
+                this.log.LogWarning(
                     (int)ErrorCode.MembershipGossipSendFailure,
                     exception,
-                    "Exception while sending gossip notification to remote silo {Silo}",
+                    "Error sending gossip notification to remote silo '{Silo}'.",
                     silo);
             }
         }
@@ -177,7 +174,7 @@ namespace Orleans.Runtime.MembershipService
                 this.log.LogError(
                     (int)ErrorCode.MembershipGossipProcessingFailure,
                     exception,
-                    "Error refreshing membership table");
+                    "Error refreshing membership table.");
             }
         }
 

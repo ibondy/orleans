@@ -12,10 +12,10 @@ namespace Orleans.Runtime
         public static readonly GrainType DirectoryCacheValidatorType = SystemTargetGrainId.CreateGrainType("dir.cache-validator");
         public static readonly GrainType ClientDirectoryType = SystemTargetGrainId.CreateGrainType("dir.client");
         public static readonly GrainType SiloControlType = SystemTargetGrainId.CreateGrainType("silo-control");
+        public static readonly GrainType SiloMetadataType = SystemTargetGrainId.CreateGrainType("silo-metadata");
         public static readonly GrainType CatalogType = SystemTargetGrainId.CreateGrainType("catalog");
         public static readonly GrainType MembershipServiceType = SystemTargetGrainId.CreateGrainType("clustering");
         public static readonly GrainType SystemMembershipTableType = SystemTargetGrainId.CreateGrainType("clustering.dev");
-        public static readonly GrainType FallbackSystemTargetType = SystemTargetGrainId.CreateGrainType("fallback");
         public static readonly GrainType LifecycleSchedulingSystemTargetType = SystemTargetGrainId.CreateGrainType("lifecycle");
         public static readonly GrainType DeploymentLoadPublisherSystemTargetType = SystemTargetGrainId.CreateGrainType("load-publisher");
         public static readonly GrainType TestHooksSystemTargetType = SystemTargetGrainId.CreateGrainType("test.hooks");
@@ -25,10 +25,11 @@ namespace Orleans.Runtime
         public static readonly GrainType StreamPullingAgentType = SystemTargetGrainId.CreateGrainType("stream.agent");
         public static readonly GrainType ManifestProviderType = SystemTargetGrainId.CreateGrainType("manifest");
         public static readonly GrainType ActivationMigratorType = SystemTargetGrainId.CreateGrainType("migrator");
+        public static readonly GrainType CancellationManagerType = SystemTargetGrainId.CreateGrainType("canceler");
         public static readonly GrainType ActivationRepartitionerType = SystemTargetGrainId.CreateGrainType("repartitioner");
         public static readonly GrainType ActivationRebalancerMonitorType = SystemTargetGrainId.CreateGrainType("rebalancer-monitor");
-        public static readonly GrainType GrainDirectoryPartition = SystemTargetGrainId.CreateGrainType("dir.grain.part");
-        public static readonly GrainType GrainDirectory = SystemTargetGrainId.CreateGrainType("dir.grain");
+        public static readonly GrainType GrainDirectoryPartitionType = SystemTargetGrainId.CreateGrainType("dir.grain.part");
+        public static readonly GrainType GrainDirectoryType = SystemTargetGrainId.CreateGrainType("dir.grain");
 
         public static readonly GrainId SiloDirectConnectionId = GrainId.Create(
             GrainType.Create(GrainTypePrefix.SystemPrefix + "silo"),
@@ -41,10 +42,10 @@ namespace Orleans.Runtime
             {DirectoryServiceType, "DirectoryService"},
             {DirectoryCacheValidatorType, "DirectoryCacheValidator"},
             {SiloControlType, "SiloControl"},
+            {SiloMetadataType, "SiloMetadata"},
             {ClientDirectoryType, "ClientDirectory"},
             {CatalogType,"Catalog"},
             {MembershipServiceType,"MembershipService"},
-            {FallbackSystemTargetType, "FallbackSystemTarget"},
             {LifecycleSchedulingSystemTargetType, "LifecycleSchedulingSystemTarget"},
             {DeploymentLoadPublisherSystemTargetType, "DeploymentLoadPublisherSystemTarget"},
             {StreamProviderManagerAgentSystemTargetType,"StreamProviderManagerAgent"},
@@ -57,7 +58,7 @@ namespace Orleans.Runtime
             {ActivationMigratorType, "ActivationMigrator"},
             {ActivationRepartitionerType, "ActivationRepartitioner"},
             {ActivationRebalancerMonitorType, "ActivationRebalancerMonitor"},
-            {GrainDirectory, "GrainDirectory"},
+            {GrainDirectoryType, "GrainDirectory"},
         }.ToFrozenDictionary();
 
         public static string SystemTargetName(GrainType id) => SingletonSystemTargetNames.TryGetValue(id, out var name) ? name : id.ToString();

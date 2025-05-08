@@ -1,8 +1,7 @@
-#nullable enable
+﻿#nullable enable
 using System;
 using System.Buffers;
 using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
 using Orleans.Serialization.Buffers;
 using Orleans.Serialization.Cloning;
@@ -145,10 +144,10 @@ namespace Orleans.Serialization.Codecs
             return result;
         }
 
-        private void ThrowInvalidSizeException(int length) => throw new IndexOutOfRangeException(
+        private static void ThrowInvalidSizeException(int length) => throw new IndexOutOfRangeException(
             $"Declared length of {typeof(Dictionary<TKey, TValue>)}, {length}, is greater than total length of input.");
 
-        private void ThrowLengthFieldMissing() => throw new RequiredFieldMissingException("Serialized dictionary is missing its length field.");
+        private static void ThrowLengthFieldMissing() => throw new RequiredFieldMissingException("Serialized dictionary is missing its length field.");
     }
 
     /// <summary>
@@ -180,12 +179,12 @@ namespace Orleans.Serialization.Codecs
         {
             if (context.TryGetCopy<Dictionary<TKey, TValue>>(input, out var result))
             {
-                return result;
+                return result!;
             }
 
             if (input.GetType() != typeof(Dictionary<TKey, TValue>))
             {
-                return context.DeepCopy(input);
+                return context.DeepCopy(input)!;
             }
 
             result = new Dictionary<TKey, TValue>(input.Count, input.Comparer);
@@ -289,7 +288,7 @@ namespace Orleans.Serialization.Codecs
                 {
                     break;
                 }
-                
+
                 fieldId += header.FieldIdDelta;
                 switch (fieldId)
                 {
@@ -338,10 +337,10 @@ namespace Orleans.Serialization.Codecs
             }
         }
 
-        private void ThrowInvalidSizeException(int length) => throw new IndexOutOfRangeException(
+        private static void ThrowInvalidSizeException(int length) => throw new IndexOutOfRangeException(
             $"Declared length of {typeof(Dictionary<TKey, TValue>)}, {length}, is greater than total length of input.");
 
-        private void ThrowLengthFieldMissing() => throw new RequiredFieldMissingException("Serialized dictionary is missing its length field.");
+        private static void ThrowLengthFieldMissing() => throw new RequiredFieldMissingException("Serialized dictionary is missing its length field.");
 
     }
 }

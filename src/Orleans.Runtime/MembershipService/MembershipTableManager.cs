@@ -4,13 +4,13 @@ using System.Collections.Immutable;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Orleans.Configuration;
 using Orleans.Internal;
 using Orleans.Runtime.Utilities;
-using Orleans.Serialization;
 using Orleans.Serialization.TypeSystem;
 
 namespace Orleans.Runtime.MembershipService
@@ -38,6 +38,13 @@ namespace Orleans.Runtime.MembershipService
         private readonly SiloAddress myAddress;
         private readonly AsyncEnumerable<MembershipTableSnapshot> updates;
         private readonly IAsyncTimer membershipUpdateTimer;
+        private readonly CancellationTokenSource _shutdownCts = new();
+
+        private readonly Task _suspectOrKillsListTask;
+        private readonly Channel<SuspectOrKillRequest> _trySuspectOrKillChannel = Channel.CreateBounded<SuspectOrKillRequest>(new BoundedChannelOptions(100) { FullMode = BoundedChannelFullMode.DropOldest });
+
+        // For testing.
+        internal AutoResetEvent TestingSuspectOrKillIdle = new(false);
 
         private MembershipTableSnapshot snapshot;
 
@@ -65,12 +72,14 @@ namespace Orleans.Runtime.MembershipService
                     initialEntries);
             this.updates = new AsyncEnumerable<MembershipTableSnapshot>(
                 initialValue: this.snapshot,
-                updateValidator: (previous, proposed) => proposed.Version > previous.Version,
+                updateValidator: (previous, proposed) => proposed.IsSuccessorTo(previous),
                 onPublished: update => Interlocked.Exchange(ref this.snapshot, update));
 
             this.membershipUpdateTimer = timerFactory.Create(
                 this.clusterMembershipOptions.TableRefreshTimeout,
                 nameof(PeriodicallyRefreshMembershipTable));
+
+            _suspectOrKillsListTask = Task.Run(ProcessSuspectOrKillLists);
         }
 
         internal Func<DateTime> GetDateTimeUtcNow { get; set; } = () => DateTime.UtcNow;
@@ -122,7 +131,7 @@ namespace Orleans.Runtime.MembershipService
                 }
             }
 
-            this.updates.TryPublish(snapshot);
+            this.updates.TryPublish(MembershipTableSnapshot.Update, snapshot);
         }
 
         private async Task<bool> RefreshInternal(bool requireCleanup)
@@ -243,34 +252,38 @@ namespace Orleans.Runtime.MembershipService
             if (this.log.IsEnabled(LogLevel.Debug)) this.log.LogDebug("Starting periodic membership table refreshes");
             try
             {
-                var targetMilliseconds = (int)this.clusterMembershipOptions.TableRefreshTimeout.TotalMilliseconds;
-                
-                TimeSpan? onceOffDelay = RandomTimeSpan.Next(this.clusterMembershipOptions.TableRefreshTimeout);
-                while (await this.membershipUpdateTimer.NextTick(onceOffDelay))
+                // jitter for initial
+                TimeSpan? overrideDelayPeriod = RandomTimeSpan.Next(this.clusterMembershipOptions.TableRefreshTimeout);
+                var exponentialBackoff = new ExponentialBackoff(EXP_BACKOFF_CONTENTION_MIN, EXP_BACKOFF_CONTENTION_MAX, EXP_BACKOFF_STEP);
+                var runningFailures = 0;
+                while (await this.membershipUpdateTimer.NextTick(overrideDelayPeriod))
                 {
-                    onceOffDelay = default;
-
                     try
                     {
                         var stopwatch = ValueStopwatch.StartNew();
+                        
                         await this.Refresh();
                         if (this.log.IsEnabled(LogLevel.Trace)) this.log.LogTrace("Refreshing membership table took {Elapsed}", stopwatch.Elapsed);
+                        // reset to allow normal refresh period after success
+                        overrideDelayPeriod = default;
+                        runningFailures = 0;
                     }
                     catch (Exception exception)
                     {
-                        this.log.LogError(
+                        runningFailures += 1;
+                        this.log.LogWarning(
                             (int)ErrorCode.MembershipUpdateIAmAliveFailure,
                             exception,
-                            "Failed to refresh membership table, will retry shortly");
+                            "Failed to refresh membership table, will retry shortly. Retry attempt {retries}", runningFailures);
 
-                        // Retry quickly
-                        onceOffDelay = TimeSpan.FromMilliseconds(200);
+                        // Retry quickly and then exponentially back off
+                        overrideDelayPeriod = exponentialBackoff.Next(runningFailures);
                     }
                 }
             }
             catch (Exception exception) when (this.fatalErrorHandler.IsUnexpected(exception))
             {
-                this.log.LogError(exception, "Error refreshing membership table");
+                this.log.LogWarning(exception, "Error refreshing membership table");
                 this.fatalErrorHandler.OnFatalException(this, nameof(PeriodicallyRefreshMembershipTable), exception);
             }
             finally
@@ -279,14 +292,14 @@ namespace Orleans.Runtime.MembershipService
             }
         }
 
-        private Task<bool> MembershipExecuteWithRetries(
+        private static Task<bool> MembershipExecuteWithRetries(
             Func<int, Task<bool>> taskFunction,
             TimeSpan timeout)
         {
             return MembershipExecuteWithRetries(taskFunction, timeout, (result, i) => result == false);
         }
 
-        private Task<T> MembershipExecuteWithRetries<T>(
+        private static Task<T> MembershipExecuteWithRetries<T>(
             Func<int, Task<T>> taskFunction,
             TimeSpan timeout,
             Func<T, int, bool> retryValueFilter)
@@ -295,8 +308,8 @@ namespace Orleans.Runtime.MembershipService
                     taskFunction,
                     NUM_CONDITIONAL_WRITE_CONTENTION_ATTEMPTS,
                     NUM_CONDITIONAL_WRITE_ERROR_ATTEMPTS,
-                    retryValueFilter,   // if failed to Update on contention - retry   
-                    (exc, i) => true,            // Retry on errors.          
+                    retryValueFilter,   // if failed to Update on contention - retry
+                    (exc, i) => true,            // Retry on errors.
                     timeout,
                     new ExponentialBackoff(EXP_BACKOFF_CONTENTION_MIN, EXP_BACKOFF_CONTENTION_MAX, EXP_BACKOFF_STEP), // how long to wait between successful retries
                     new ExponentialBackoff(EXP_BACKOFF_ERROR_MIN, EXP_BACKOFF_ERROR_MAX, EXP_BACKOFF_STEP)  // how long to wait between error retries
@@ -341,7 +354,7 @@ namespace Orleans.Runtime.MembershipService
 
                     var gossipTask = this.GossipToOthers(this.myAddress, status);
                     gossipTask.Ignore();
-                    var cancellation = new CancellationTokenSource();
+                    using var cancellation = new CancellationTokenSource();
                     var timeoutTask = Task.Delay(GossipTimeout, cancellation.Token);
                     var task = await Task.WhenAny(gossipTask, timeoutTask);
                     if (ReferenceEquals(task, timeoutTask))
@@ -363,7 +376,7 @@ namespace Orleans.Runtime.MembershipService
                 else
                 {
                     wasThrownLocally = true;
-                    log.LogError(
+                    log.LogInformation(
                         (int)ErrorCode.MembershipFailedToWriteConditional,
                         "Silo {MyAddress} failed to update its status to {Status} in the membership table due to write contention on the table after {NumCalls} attempts.",
                         myAddress,
@@ -374,7 +387,7 @@ namespace Orleans.Runtime.MembershipService
             }
             catch (Exception exc)  when (!wasThrownLocally)
             {
-                log.LogError(
+                log.LogWarning(
                     (int)ErrorCode.MembershipFailedToWrite,
                     exc,
                     "Silo {MyAddress} failed to update its status to {Status} in the table due to failures (socket failures or table read/write failures) after {NumCalls} attempts",
@@ -479,8 +492,7 @@ namespace Orleans.Runtime.MembershipService
             if (table is null) throw new ArgumentNullException(nameof(table));
             if (this.log.IsEnabled(LogLevel.Debug)) this.log.LogDebug($"{nameof(ProcessTableUpdate)} (called from {{Caller}}) membership table {{Table}}", caller, table.ToString());
 
-            var updated = MembershipTableSnapshot.Create(table);
-            if (this.updates.TryPublish(updated))
+            if (this.updates.TryPublish(MembershipTableSnapshot.Update, table))
             {
                 this.LogMissedIAmAlives(table);
 
@@ -504,9 +516,9 @@ namespace Orleans.Runtime.MembershipService
                 if (entry.Status != SiloStatus.Active) continue;
 
                 var now = GetDateTimeUtcNow();
-                var missedSince = entry.HasMissedIAmAlivesSince(this.clusterMembershipOptions, now);
-                if (missedSince != null)
+                if (entry.HasMissedIAmAlives(this.clusterMembershipOptions, now))
                 {
+                    var missedSince = entry.EffectiveIAmAliveTime;
                     log.LogWarning(
                         (int)ErrorCode.MembershipMissedIAmAliveTableUpdate,
                         "Noticed that silo {SiloAddress} has not updated it's IAmAliveTime table column recently."
@@ -585,19 +597,13 @@ namespace Orleans.Runtime.MembershipService
             if (log.IsEnabled(LogLevel.Debug)) log.LogDebug("CleanupTableEntries: About to DeclareDead {Count} outdated silos in the table: {Silos}", silosToDeclareDead.Count,
                 Utils.EnumerableToString(silosToDeclareDead.Select(tuple => tuple.Item1)));
 
-            var result = true;
-            var nextVersion = table.Version;
-
             foreach (var siloData in silosToDeclareDead)
             {
-                MembershipEntry entry = siloData.Item1;
-                string eTag = siloData.Item2;
-                bool ok = await DeclareDead(entry, eTag, nextVersion, GetDateTimeUtcNow());
-                if (!ok) result = false;
-                nextVersion = nextVersion.Next(); // advance the table version (if write succeded, we advanced the version. if failed, someone else did. It is safe anyway).
+                await _trySuspectOrKillChannel.Writer.WriteAsync(
+                    SuspectOrKillRequest.CreateKillRequest(siloData.Item1.SiloAddress));
             }
 
-            return result;
+            return true;
         }
 
         private void KillMyselfLocally(string reason)
@@ -618,7 +624,7 @@ namespace Orleans.Runtime.MembershipService
                 var entry = item.Value;
                 if (entry.SiloAddress.IsSameLogicalSilo(this.myAddress)) continue;
                 if (!IsFunctionalForMembership(entry.Status)) continue;
-                if (entry.HasMissedIAmAlivesSince(this.clusterMembershipOptions, now) != default) continue;
+                if (entry.HasMissedIAmAlives(this.clusterMembershipOptions, now)) continue;
 
                 gossipPartners.Add(entry.SiloAddress);
 
@@ -638,9 +644,89 @@ namespace Orleans.Runtime.MembershipService
             }
         }
 
+        private class SuspectOrKillRequest
+        {
+            public SiloAddress SiloAddress { get; set; }
+            public SiloAddress OtherSilo { get; set; }
+            public RequestType Type { get; set; }
+
+            public enum RequestType
+            {
+                Unknown = 0,
+                SuspectOrKill,
+                Kill
+            }
+
+            public static SuspectOrKillRequest CreateKillRequest(SiloAddress silo)
+            {
+                return new SuspectOrKillRequest
+                {
+                    SiloAddress = silo,
+                    OtherSilo = null,
+                    Type = RequestType.Kill
+                };
+            }
+
+            public static SuspectOrKillRequest CreateSuspectOrKillRequest(SiloAddress silo, SiloAddress otherSilo)
+            {
+                return new SuspectOrKillRequest
+                {
+                    SiloAddress = silo,
+                    OtherSilo = otherSilo,
+                    Type = RequestType.SuspectOrKill
+                };
+            }
+        }
+
         public async Task<bool> TryKill(SiloAddress silo)
         {
-            var table = await membershipTableProvider.ReadAll();
+            await _trySuspectOrKillChannel.Writer.WriteAsync(SuspectOrKillRequest.CreateKillRequest(silo));
+            return true;
+        }
+
+        public async Task ProcessSuspectOrKillLists()
+        {
+            var backoff = new ExponentialBackoff(EXP_BACKOFF_ERROR_MIN, EXP_BACKOFF_ERROR_MAX,
+                EXP_BACKOFF_STEP);
+            var runningFailureCount = 0;
+            var reader = _trySuspectOrKillChannel.Reader;
+            while (await reader.WaitToReadAsync(_shutdownCts.Token))
+            {
+                while (reader.TryRead(out var request))
+                {
+                    await Task.Delay(backoff.Next(runningFailureCount), _shutdownCts.Token);
+
+                    try
+                    {
+                        switch (request.Type)
+                        {
+                            case SuspectOrKillRequest.RequestType.Kill:
+                                await InnerTryKill(request.SiloAddress, _shutdownCts.Token);
+                                break;
+                            case SuspectOrKillRequest.RequestType.SuspectOrKill:
+                                await InnerTryToSuspectOrKill(request.SiloAddress, request.OtherSilo, _shutdownCts.Token);
+                                break;
+                        }
+                        runningFailureCount = 0;
+                    }
+                    catch (Exception ex)
+                    {
+                        runningFailureCount += 1;
+                        log.LogError(ex, "Error while processing suspect or kill lists. '{FailureCount}' consecutive failures.", runningFailureCount);
+                        await _trySuspectOrKillChannel.Writer.WriteAsync(request, _shutdownCts.Token);
+                    }
+
+                    if (!reader.TryPeek(out _))
+                    {
+                        TestingSuspectOrKillIdle.Set();
+                    }
+                }
+            }
+        }
+
+        private async Task<bool> InnerTryKill(SiloAddress silo, CancellationToken cancellationToken)
+        {
+            var table = await membershipTableProvider.ReadAll().WaitAsync(cancellationToken);
 
             if (log.IsEnabled(LogLevel.Debug))
             {
@@ -686,12 +772,18 @@ namespace Orleans.Runtime.MembershipService
                 (int)ErrorCode.MembershipMarkingAsDead,
                 "Going to mark silo {SiloAddress} dead as a result of a call to TryKill",
                 entry.SiloAddress);
-            return await DeclareDead(entry, eTag, table.Version, GetDateTimeUtcNow());
+            return await DeclareDead(entry, eTag, table.Version, GetDateTimeUtcNow()).WaitAsync(cancellationToken);
         }
 
-        public async Task<bool> TryToSuspectOrKill(SiloAddress silo)
+        public async Task<bool> TryToSuspectOrKill(SiloAddress silo, SiloAddress indirectProbingSilo = null)
         {
-            var table = await membershipTableProvider.ReadAll();
+            await _trySuspectOrKillChannel.Writer.WriteAsync(SuspectOrKillRequest.CreateSuspectOrKillRequest(silo, indirectProbingSilo));
+            return true;
+        }
+
+        private async Task<bool> InnerTryToSuspectOrKill(SiloAddress silo, SiloAddress indirectProbingSilo, CancellationToken cancellationToken)
+        {
+            var table = await membershipTableProvider.ReadAll().WaitAsync(cancellationToken);
             var now = GetDateTimeUtcNow();
 
             if (log.IsEnabled(LogLevel.Debug)) log.LogDebug("TryToSuspectOrKill: Read Membership table {Table}", table.ToString());
@@ -721,7 +813,9 @@ namespace Orleans.Runtime.MembershipService
             {
                 // this should not happen ...
                 log.LogError((int)ErrorCode.MembershipFailedToReadSilo, "Could not find silo entry for silo {Silo} in the table.", silo);
-                throw new KeyNotFoundException($"Could not find silo entry for silo {silo} in the table.");
+                //What is a caller going to do? The silo is not in the table which is what we are trying to achieve.
+                //throw new KeyNotFoundException($"Could not find silo entry for silo {silo} in the table.");
+                return false;
             }
 
             var entry = tuple.Item1.Copy();
@@ -746,14 +840,14 @@ namespace Orleans.Runtime.MembershipService
             // Get all valid (non-expired) votes
             var freshVotes = entry.GetFreshVotes(now, this.clusterMembershipOptions.DeathVoteExpirationTimeout);
 
-            if (log.IsEnabled(LogLevel.Trace)) log.LogTrace("Current number of fresh voters for {SiloAddress} is {FreshVotes}", silo, freshVotes.Count.ToString());
+            if (log.IsEnabled(LogLevel.Trace)) log.LogTrace("Current number of fresh voters for '{SiloAddress}' is '{FreshVotes}'.", silo, freshVotes.Count.ToString());
 
             if (freshVotes.Count >= this.clusterMembershipOptions.NumVotesForDeathDeclaration)
             {
                 // this should not happen ...
                 log.LogError(
                     (int)ErrorCode.Runtime_Error_100053,
-                    "Silo {SiloAddress} is suspected by {SuspectorCount} which is more or equal than {NumVotesForDeathDeclaration}, but is not marked as dead. This is a bug!!!",
+                    "Silo '{SiloAddress}' is suspected by '{SuspecterCount}' which is greater than or equal to '{NumVotesForDeathDeclaration}', but is not marked as dead. This is a bug!",
                     entry.SiloAddress,
                     freshVotes.Count.ToString(),
                     this.clusterMembershipOptions.NumVotesForDeathDeclaration.ToString());
@@ -765,12 +859,22 @@ namespace Orleans.Runtime.MembershipService
             // Try to add our vote to the list and tally the fresh votes again.
             var prevList = entry.SuspectTimes?.ToList() ?? new List<Tuple<SiloAddress, DateTime>>();
             entry.AddOrUpdateSuspector(myAddress, now, clusterMembershipOptions.NumVotesForDeathDeclaration);
+
+            // Include the indirect probe silo's vote as well, if it exists.
+            if (indirectProbingSilo is not null)
+            {
+                entry.AddOrUpdateSuspector(indirectProbingSilo, now, clusterMembershipOptions.NumVotesForDeathDeclaration);
+            }
+
             freshVotes = entry.GetFreshVotes(now, this.clusterMembershipOptions.DeathVoteExpirationTimeout);
 
             // Determine if there are enough votes to evict the silo.
             // Handle the corner case when the number of active silos is very small (then my only vote is enough)
-            int activeSilos = table.GetSiloStatuses(status => status == SiloStatus.Active, true, myAddress).Count;
-            if (freshVotes.Count >= clusterMembershipOptions.NumVotesForDeathDeclaration || freshVotes.Count >= (activeSilos + 1) / 2)
+            int activeNonStaleSilos = table.Members.Count(kv =>
+                kv.Item1.Status == SiloStatus.Active &&
+                !kv.Item1.HasMissedIAmAlives(clusterMembershipOptions, now));
+            var numVotesRequiredToEvict = Math.Min(clusterMembershipOptions.NumVotesForDeathDeclaration, (activeNonStaleSilos + 1) / 2);
+            if (freshVotes.Count >= numVotesRequiredToEvict)
             {
                 // Find the local silo's vote index
                 int myVoteIndex = freshVotes.FindIndex(voter => myAddress.Equals(voter.Item1));
@@ -778,20 +882,19 @@ namespace Orleans.Runtime.MembershipService
                 // Kick this silo off
                 log.LogInformation(
                     (int)ErrorCode.MembershipMarkingAsDead,
-                    "Going to mark silo {SiloAddress} as DEAD in the table #1. This silo is the last voter: #FreshVotes={FreshVotes}, MyVoteIndex = {MyVoteIndex}, NumVotesForDeathDeclaration={NumVotesForDeathDeclaration} , #ActiveSilos={ActiveSiloCount}, suspect list={SuspectingSilos}",
+                    "Evicting '{SiloAddress}'. Fresh vote count: '{FreshVotes}', votes required to evict: '{NumVotesRequiredToEvict}', non-stale silo count: '{NonStaleSiloCount}', suspecters: '{SuspectingSilos}'",
                     entry.SiloAddress,
                     freshVotes.Count,
-                    myVoteIndex,
                     this.clusterMembershipOptions.NumVotesForDeathDeclaration,
-                    activeSilos,
+                    activeNonStaleSilos,
                     PrintSuspectList(entry.SuspectTimes));
 
-                return await DeclareDead(entry, eTag, table.Version, now);
+                return await DeclareDead(entry, eTag, table.Version, now).WaitAsync(cancellationToken);
             }
 
             log.LogInformation(
                 (int)ErrorCode.MembershipVotingForKill,
-                "Putting my vote to mark silo {SiloAddress} as DEAD #2. Previous suspect list is {PreviousSuspectors}, trying to update to {Suspectors}, ETag={ETag}, FreshVotes is {FreshVotes}",
+                "Voting to evict '{SiloAddress}'. Previous suspect list is '{PreviousSuspecters}', trying to update to '{Suspecters}', ETag: '{ETag}', Fresh vote count: '{FreshVotes}'",
                 entry.SiloAddress, 
                 PrintSuspectList(prevList), 
                 PrintSuspectList(entry.SuspectTimes),
@@ -799,10 +902,10 @@ namespace Orleans.Runtime.MembershipService
                 PrintSuspectList(freshVotes));
 
             // If we fail to update here we will retry later.
-            var ok = await membershipTableProvider.UpdateRow(entry, eTag, table.Version.Next());
+            var ok = await membershipTableProvider.UpdateRow(entry, eTag, table.Version.Next()).WaitAsync(cancellationToken);
             if (ok)
             {
-                table = await membershipTableProvider.ReadAll();
+                table = await membershipTableProvider.ReadAll().WaitAsync(cancellationToken);
                 this.ProcessTableUpdate(table, "TrySuspectOrKill");
 
                 // Gossip using the local silo status, since this is just informational to propagate the suspicion vote.
@@ -869,11 +972,14 @@ namespace Orleans.Runtime.MembershipService
 
             async Task OnRuntimeGrainServicesStop(CancellationToken ct)
             {
+                tasks.Add(_suspectOrKillsListTask);
+                _trySuspectOrKillChannel.Writer.TryComplete();
                 this.membershipUpdateTimer.Dispose();
+                _shutdownCts.Cancel();
 
                 // Allow some minimum time for graceful shutdown.
                 var gracePeriod = Task.WhenAll(Task.Delay(ClusterMembershipOptions.ClusteringShutdownGracePeriod), ct.WhenCancelled());
-                await Task.WhenAny(gracePeriod, Task.WhenAll(tasks));
+                await Task.WhenAny(gracePeriod, Task.WhenAll(tasks)).SuppressThrowing();
             }
         }
 
@@ -881,6 +987,7 @@ namespace Orleans.Runtime.MembershipService
         {
             this.updates.Dispose();
             this.membershipUpdateTimer.Dispose();
+            _shutdownCts.Dispose();
         }
     }
 }

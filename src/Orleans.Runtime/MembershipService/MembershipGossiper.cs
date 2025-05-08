@@ -1,41 +1,33 @@
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
-namespace Orleans.Runtime.MembershipService
+namespace Orleans.Runtime.MembershipService;
+
+internal partial class MembershipGossiper(IServiceProvider serviceProvider, ILogger<MembershipGossiper> logger) : IMembershipGossiper
 {
-    internal class MembershipGossiper : IMembershipGossiper
+    private MembershipSystemTarget? _membershipSystemTarget;
+
+    public Task GossipToRemoteSilos(
+        List<SiloAddress> gossipPartners,
+        MembershipTableSnapshot snapshot,
+        SiloAddress updatedSilo,
+        SiloStatus updatedStatus)
     {
-        private readonly IServiceProvider serviceProvider;
-        private readonly ILogger<MembershipGossiper> log;
+        if (gossipPartners.Count == 0) return Task.CompletedTask;
 
-        public MembershipGossiper(IServiceProvider serviceProvider, ILogger<MembershipGossiper> log)
-        {
-            this.serviceProvider = serviceProvider;
-            this.log = log;
-        }
+        LogDebugGossipingStatusToPartners(logger, updatedSilo, updatedStatus, gossipPartners.Count);
 
-        public Task GossipToRemoteSilos(
-            List<SiloAddress> gossipPartners,
-            MembershipTableSnapshot snapshot,
-            SiloAddress updatedSilo,
-            SiloStatus updatedStatus)
-        {
-            if (gossipPartners.Count == 0) return Task.CompletedTask;
-
-            if (log.IsEnabled(LogLevel.Debug))
-            {
-                this.log.LogDebug(
-                    "Gossiping {Silo} status {Status} to {NumPartners} partners",
-                    updatedSilo,
-                    updatedStatus,
-                    gossipPartners.Count);
-            }
-
-            var systemTarget = this.serviceProvider.GetRequiredService<MembershipSystemTarget>();
-            return systemTarget.GossipToRemoteSilos(gossipPartners, snapshot, updatedSilo, updatedStatus);
-        }
+        var systemTarget = _membershipSystemTarget ??= serviceProvider.GetRequiredService<MembershipSystemTarget>();
+        return systemTarget.GossipToRemoteSilos(gossipPartners, snapshot, updatedSilo, updatedStatus);
     }
+
+    [LoggerMessage(
+        Level = LogLevel.Debug,
+        Message = "Gossiping {Silo} status {Status} to {NumPartners} partners"
+    )]
+    private static partial void LogDebugGossipingStatusToPartners(ILogger logger, SiloAddress silo, SiloStatus status, int numPartners);
 }

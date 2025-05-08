@@ -224,7 +224,7 @@ namespace Orleans.Hosting.Kubernetes
                             .Take(_options.CurrentValue.MaxAgents)
                             .ToList();
 
-                        if (!_enableMonitoring && chosenSilos.Any(s => s.SiloAddress.Equals(_localSiloDetails.SiloAddress)))
+                        if (!_enableMonitoring && chosenSilos.Exists(s => s.SiloAddress.Equals(_localSiloDetails.SiloAddress)))
                         {
                             _enableMonitoring = true;
                             _pauseMonitoringSemaphore.Release(1);
@@ -271,7 +271,10 @@ namespace Orleans.Hosting.Kubernetes
                         previous = update;
                     }
                 }
-                catch (Exception exception) when (!(_shutdownToken.IsCancellationRequested && (exception is TaskCanceledException || exception is OperationCanceledException)))
+                catch (OperationCanceledException) when (_shutdownToken.IsCancellationRequested)
+                {
+                }
+                catch (Exception exception)
                 {
                     if (_logger.IsEnabled(LogLevel.Debug))
                     {

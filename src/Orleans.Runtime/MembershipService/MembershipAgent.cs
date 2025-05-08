@@ -15,6 +15,9 @@ namespace Orleans.Runtime.MembershipService
     /// </summary>
     internal class MembershipAgent : IHealthCheckParticipant, ILifecycleParticipant<ISiloLifecycle>, IDisposable, MembershipAgent.ITestAccessor
     {
+        private static readonly TimeSpan EXP_BACKOFF_CONTENTION_MIN = TimeSpan.FromMilliseconds(200);
+        private static readonly TimeSpan EXP_BACKOFF_CONTENTION_MAX = TimeSpan.FromMinutes(2);
+        private static readonly TimeSpan EXP_BACKOFF_STEP = TimeSpan.FromMilliseconds(1000);
         private readonly CancellationTokenSource cancellation = new CancellationTokenSource();
         private readonly MembershipTableManager tableManager;
         private readonly ILocalSiloDetails localSilo;
@@ -59,27 +62,31 @@ namespace Orleans.Runtime.MembershipService
             if (this.log.IsEnabled(LogLevel.Debug)) this.log.LogDebug("Starting periodic membership liveness timestamp updates");
             try
             {
-                TimeSpan? onceOffDelay = default;
-                while (await this.iAmAliveTimer.NextTick(onceOffDelay) && !this.tableManager.CurrentStatus.IsTerminating())
+                // jitter for initial
+                TimeSpan? overrideDelayPeriod = RandomTimeSpan.Next(this.clusterMembershipOptions.IAmAliveTablePublishTimeout);
+                var exponentialBackoff = new ExponentialBackoff(EXP_BACKOFF_CONTENTION_MIN, EXP_BACKOFF_CONTENTION_MAX, EXP_BACKOFF_STEP);
+                var runningFailures = 0;
+                while (await this.iAmAliveTimer.NextTick(overrideDelayPeriod) && !this.tableManager.CurrentStatus.IsTerminating())
                 {
-                    onceOffDelay = default;
-
                     try
                     {
                         var stopwatch = ValueStopwatch.StartNew();
                         ((ITestAccessor)this).OnUpdateIAmAlive?.Invoke();
                         await this.tableManager.UpdateIAmAlive();
                         if (this.log.IsEnabled(LogLevel.Trace)) this.log.LogTrace("Updating IAmAlive took {Elapsed}", stopwatch.Elapsed);
+                        overrideDelayPeriod = default;
+                        runningFailures = 0;
                     }
                     catch (Exception exception)
                     {
-                        this.log.LogError(
+                        runningFailures += 1;
+                        this.log.LogWarning(
                             (int)ErrorCode.MembershipUpdateIAmAliveFailure,
                             exception,
                             "Failed to update table entry for this silo, will retry shortly");
 
-                        // Retry quickly
-                        onceOffDelay = TimeSpan.FromMilliseconds(200);
+                        // Retry quickly and then exponentially back off
+                        overrideDelayPeriod = exponentialBackoff.Next(runningFailures);
                     }
                 }
             }
@@ -122,7 +129,7 @@ namespace Orleans.Runtime.MembershipService
         private async Task ValidateInitialConnectivity()
         {
             // Continue attempting to validate connectivity until some reasonable timeout.
-            var maxAttemptTime = this.clusterMembershipOptions.ProbeTimeout.Multiply(5.0 * this.clusterMembershipOptions.NumMissedProbesLimit);
+            var maxAttemptTime = this.clusterMembershipOptions.MaxJoinAttemptTime;
             var attemptNumber = 1;
             var now = this.getUtcDateTime();
             var attemptUntil = now + maxAttemptTime;
@@ -138,7 +145,7 @@ namespace Orleans.Runtime.MembershipService
                         var entry = item.Value;
                         if (entry.Status != SiloStatus.Active) continue;
                         if (entry.SiloAddress.IsSameLogicalSilo(this.localSilo.SiloAddress)) continue;
-                        if (entry.HasMissedIAmAlivesSince(this.clusterMembershipOptions, now) != default) continue;
+                        if (entry.HasMissedIAmAlives(this.clusterMembershipOptions, now) != default) continue;
 
                         activeSilos.Add(entry.SiloAddress);
                     }

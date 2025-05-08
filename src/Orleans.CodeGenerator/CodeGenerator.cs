@@ -9,6 +9,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Orleans.CodeGenerator.Diagnostics;
 using Orleans.CodeGenerator.Hashing;
+using Orleans.CodeGenerator.Model;
 using Orleans.CodeGenerator.SyntaxGeneration;
 using static Microsoft.CodeAnalysis.CSharp.SyntaxFactory;
 using static Orleans.CodeGenerator.SyntaxGeneration.SymbolExtensions;
@@ -32,7 +33,7 @@ namespace Orleans.CodeGenerator
         private readonly Dictionary<string, List<MemberDeclarationSyntax>> _namespacedMembers = new();
         private readonly Dictionary<InvokableMethodId, InvokableMethodDescription> _invokableMethodDescriptions = new();
         private readonly HashSet<INamedTypeSymbol> _visitedInterfaces = new(SymbolEqualityComparer.Default);
-        private readonly List<string> DisabledWarnings = new() { "CS1591" };
+        private readonly List<string> DisabledWarnings = new() { "CS1591", "RS0016", "RS0041" };
 
         public CodeGenerator(Compilation compilation, CodeGeneratorOptions options)
         {
@@ -379,7 +380,7 @@ namespace Orleans.CodeGenerator
 
             if (namespaces.Count > 0)
             {
-                namespaces[0] = namespaces[0]
+                namespaces[namespaces.Count - 1] = namespaces[namespaces.Count - 1]
                     .WithTrailingTrivia(
                        SyntaxFactory.TriviaList(
                            new List<SyntaxTrivia>
@@ -456,7 +457,7 @@ namespace Orleans.CodeGenerator
         }
 
         // Returns descriptions of all data members (fields and properties)
-        private IEnumerable<IMemberDescription> GetDataMembers(FieldIdAssignmentHelper fieldIdAssignmentHelper)
+        private static IEnumerable<IMemberDescription> GetDataMembers(FieldIdAssignmentHelper fieldIdAssignmentHelper)
         {
             var members = new Dictionary<(uint, bool), IMemberDescription>();
 
@@ -599,7 +600,8 @@ namespace Orleans.CodeGenerator
                         AttributeArgument(typeof(CodeGenerator).Assembly.GetName().Version.ToString().GetLiteralExpression())),
                 Attribute(ParseName("global::System.ComponentModel.EditorBrowsableAttribute"))
                     .AddArgumentListArguments(
-                        AttributeArgument(ParseName("global::System.ComponentModel.EditorBrowsableState").Member("Never")))
+                        AttributeArgument(ParseName("global::System.ComponentModel.EditorBrowsableState").Member("Never"))),
+                        Attribute(ParseName("global::System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverageAttribute"))
             );
 
         internal static AttributeSyntax GetMethodImplAttributeSyntax() => MethodImplAttributeSyntax;

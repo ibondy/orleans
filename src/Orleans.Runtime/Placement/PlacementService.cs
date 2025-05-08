@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -7,8 +8,10 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Orleans.Configuration;
+using Orleans.Placement;
 using Orleans.Runtime.GrainDirectory;
 using Orleans.Runtime.Internal;
+using Orleans.Runtime.Placement.Filtering;
 using Orleans.Runtime.Versions;
 
 namespace Orleans.Runtime.Placement
@@ -16,7 +19,7 @@ namespace Orleans.Runtime.Placement
     /// <summary>
     /// Central point for placement decisions.
     /// </summary>
-    internal class PlacementService : IPlacementContext
+    internal partial class PlacementService : IPlacementContext
     {
         private const int PlacementWorkerCount = 16;
         private readonly PlacementStrategyResolver _strategyResolver;
@@ -28,6 +31,8 @@ namespace Orleans.Runtime.Placement
         private readonly ISiloStatusOracle _siloStatusOracle;
         private readonly bool _assumeHomogeneousSilosForTesting;
         private readonly PlacementWorker[] _workers;
+        private readonly PlacementFilterStrategyResolver _filterStrategyResolver;
+        private readonly PlacementFilterDirectorResolver _placementFilterDirectoryResolver;
 
         /// <summary>
         /// Create a <see cref="PlacementService"/> instance.
@@ -41,11 +46,15 @@ namespace Orleans.Runtime.Placement
             GrainVersionManifest grainInterfaceVersions,
             CachedVersionSelectorManager versionSelectorManager,
             PlacementDirectorResolver directorResolver,
-            PlacementStrategyResolver strategyResolver)
+            PlacementStrategyResolver strategyResolver,
+            PlacementFilterStrategyResolver filterStrategyResolver,
+            PlacementFilterDirectorResolver placementFilterDirectoryResolver)
         {
             LocalSilo = localSiloDetails.SiloAddress;
             _strategyResolver = strategyResolver;
             _directorResolver = directorResolver;
+            _filterStrategyResolver = filterStrategyResolver;
+            _placementFilterDirectoryResolver = placementFilterDirectoryResolver;
             _logger = logger;
             _grainLocator = grainLocator;
             _grainInterfaceVersions = grainInterfaceVersions;
@@ -74,20 +83,12 @@ namespace Orleans.Runtime.Placement
             var grainId = message.TargetGrain;
             if (_grainLocator.TryLookupInCache(grainId, out var result) && CachedAddressIsValid(message, result))
             {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug("Found address {Address} for grain {GrainId} in cache for message {Message}", result, grainId, message);
-                }
-
+                LogDebugFoundAddress(result, grainId, message);
                 SetMessageTargetPlacement(message, result.SiloAddress);
                 return Task.CompletedTask;
             }
 
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug("Looking up address for grain {GrainId} for message {Message}", grainId, message);
-            }
-
+            LogDebugLookingUpAddress(grainId, message);
             var worker = _workers[grainId.GetUniformHashCode() % PlacementWorkerCount];
             return worker.AddressMessage(message);
 
@@ -97,9 +98,7 @@ namespace Orleans.Runtime.Placement
         private void SetMessageTargetPlacement(Message message, SiloAddress targetSilo)
         {
             message.TargetSilo = targetSilo;
-#if DEBUG
-            if (_logger.IsEnabled(LogLevel.Trace)) _logger.LogTrace((int)ErrorCode.Dispatcher_AddressMsg_SelectTarget, "AddressMessage Placement SelectTarget {Message}", message);
-#endif
+            LogTraceAddressMessageSelectTarget(message);
         }
 
         public SiloAddress[] GetCompatibleSilos(PlacementTarget target)
@@ -117,6 +116,20 @@ namespace Orleans.Runtime.Placement
                 : _grainInterfaceVersions.GetSupportedSilos(grainType).Result;
 
             var compatibleSilos = silos.Intersect(AllActiveSilos).ToArray();
+
+            var filters = _filterStrategyResolver.GetPlacementFilterStrategies(grainType);
+            if (filters.Length > 0)
+            {
+                IEnumerable<SiloAddress> filteredSilos = compatibleSilos;
+                foreach (var placementFilter in filters)
+                {
+                    var director = _placementFilterDirectoryResolver.GetFilterDirector(placementFilter);
+                    filteredSilos = director.Filter(placementFilter, target, filteredSilos);
+                }
+
+                compatibleSilos = filteredSilos.ToArray();
+            }
+
             if (compatibleSilos.Length == 0)
             {
                 var allWithType = _grainInterfaceVersions.GetSupportedSilos(grainType).Result;
@@ -126,7 +139,7 @@ namespace Orleans.Runtime.Placement
                 throw new OrleansException(
                     $"No active nodes are compatible with grain {grainType} and interface {target.InterfaceType} version {target.InterfaceVersion}. "
                     + $"Known nodes with grain type: {allWithTypeString}. "
-                    + $"All known nodes compatible with interface version: {allWithTypeString}");
+                    + $"All known nodes compatible with interface version: {allWithInterfaceString}");
             }
 
             return compatibleSilos;
@@ -139,7 +152,7 @@ namespace Orleans.Runtime.Placement
                 var result = _siloStatusOracle.GetApproximateSiloStatuses(true).Keys.ToArray();
                 if (result.Length > 0) return result;
 
-                _logger.LogWarning((int)ErrorCode.Catalog_GetApproximateSiloStatuses, "AllActiveSilos SiloStatusOracle.GetApproximateSiloStatuses empty");
+                LogWarningAllActiveSilos();
                 return new SiloAddress[] { LocalSilo };
             }
         }
@@ -173,10 +186,7 @@ namespace Orleans.Runtime.Placement
             bool CachedAddressIsValidCore(Message message, GrainAddress cachedAddress, List<GrainAddressCacheUpdate> cacheUpdates)
             {
                 var resultIsValid = true;
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug("Invalidating {Count} cached entries for message {Message}", cacheUpdates.Count, message);
-                }
+                LogDebugInvalidatingCachedEntries(cacheUpdates.Count, message);
 
                 foreach (var update in cacheUpdates)
                 {
@@ -223,7 +233,7 @@ namespace Orleans.Runtime.Placement
 #pragma warning restore IDE0052 // Remove unread private members
             private readonly object _lockObj = new();
             private readonly PlacementService _placementService;
-            private List<(Message Message, TaskCompletionSource<bool> Completion)> _messages = new();
+            private List<(Message Message, TaskCompletionSource Completion)> _messages = new();
 
             public PlacementWorker(PlacementService placementService)
             {
@@ -236,7 +246,7 @@ namespace Orleans.Runtime.Placement
 
             public Task AddressMessage(Message message)
             {
-                var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
                 lock (_lockObj)
                 {
@@ -248,7 +258,7 @@ namespace Orleans.Runtime.Placement
                 return completion.Task;
             }
 
-            private List<(Message Message, TaskCompletionSource<bool> Completion)> GetMessages()
+            private List<(Message Message, TaskCompletionSource Completion)> GetMessages()
             {
                 lock (_lockObj)
                 {
@@ -305,7 +315,7 @@ namespace Orleans.Runtime.Placement
                     }
                     catch (Exception exception)
                     {
-                        _logger.LogWarning(exception, "Error in placement worker.");
+                        LogWarnInPlacementWorker(_logger, exception);
                     }
 
                     await _workSignal.WaitAsync();
@@ -323,36 +333,31 @@ namespace Orleans.Runtime.Placement
             {
                 var resultTask = completedWorkItem.Result;
                 var messages = completedWorkItem.Messages;
-                if (resultTask.IsCompletedSuccessfully)
+
+                try
                 {
+                    var siloAddress = resultTask.GetAwaiter().GetResult();
                     foreach (var message in messages)
                     {
-                        var siloAddress = resultTask.Result;
                         _placementService.SetMessageTargetPlacement(message.Message, siloAddress);
-                        message.Completion.TrySetResult(true);
+                        message.Completion.TrySetResult();
                     }
-
-                    messages.Clear();
                 }
-                else
+                catch (Exception exception)
                 {
+                    var originalException = exception switch
+                    {
+                        AggregateException ae when ae.InnerExceptions.Count == 1 => ae.InnerException,
+                        _ => exception,
+                    };
+
                     foreach (var message in messages)
                     {
-                        message.Completion.TrySetException(OriginalException(resultTask.Exception));
+                        message.Completion.TrySetException(originalException);
                     }
-
-                    messages.Clear();
                 }
 
-                static Exception OriginalException(AggregateException exception)
-                {
-                    if (exception.InnerExceptions.Count == 1)
-                    {
-                        return exception.InnerException;
-                    }
-
-                    return exception;
-                }
+                messages.Clear();
             }
 
             private async Task<SiloAddress> GetOrPlaceActivationAsync(Message firstMessage)
@@ -388,10 +393,47 @@ namespace Orleans.Runtime.Placement
 
             private class GrainPlacementWorkItem
             {
-                public List<(Message Message, TaskCompletionSource<bool> Completion)> Messages { get; } = new();
+                public List<(Message Message, TaskCompletionSource Completion)> Messages { get; } = new();
 
                 public Task<SiloAddress> Result { get; set; }
             }
         }
+
+        [LoggerMessage(
+            Level = LogLevel.Debug,
+            Message = "Found address {Address} for grain {GrainId} in cache for message {Message}"
+        )]
+        private partial void LogDebugFoundAddress(GrainAddress address, GrainId grainId, Message message);
+
+        [LoggerMessage(
+            Level = LogLevel.Debug,
+            Message = "Looking up address for grain {GrainId} for message {Message}"
+        )]
+        private partial void LogDebugLookingUpAddress(GrainId grainId, Message message);
+
+        [LoggerMessage(
+            Level = LogLevel.Trace,
+            Message = "AddressMessage Placement SelectTarget {Message}"
+        )]
+        private partial void LogTraceAddressMessageSelectTarget(Message message);
+
+        [LoggerMessage(
+            EventId = (int)ErrorCode.Catalog_GetApproximateSiloStatuses,
+            Level = LogLevel.Warning,
+            Message = "AllActiveSilos SiloStatusOracle.GetApproximateSiloStatuses empty"
+        )]
+        private partial void LogWarningAllActiveSilos();
+
+        [LoggerMessage(
+            Level = LogLevel.Debug,
+            Message = "Invalidating {Count} cached entries for message {Message}"
+        )]
+        private partial void LogDebugInvalidatingCachedEntries(int count, Message message);
+
+        [LoggerMessage(
+            Level = LogLevel.Warning,
+            Message = "Error in placement worker."
+        )]
+        private static partial void LogWarnInPlacementWorker(ILogger logger, Exception exception);
     }
 }

@@ -9,7 +9,7 @@ namespace Orleans.Streaming.EventHubs
     /// <summary>
     /// Aggregated cache pressure monitor
     /// </summary>
-    public class AggregatedCachePressureMonitor : List<ICachePressureMonitor>, ICachePressureMonitor
+    public partial class AggregatedCachePressureMonitor : List<ICachePressureMonitor>, ICachePressureMonitor
     {
         private bool isUnderPressure;
         private readonly ILogger logger;
@@ -58,17 +58,33 @@ namespace Orleans.Streaming.EventHubs
         /// <returns></returns>
         public bool IsUnderPressure(DateTime utcNow)
         {
-            bool underPressure = this.Any(monitor => monitor.IsUnderPressure(utcNow));
+            bool underPressure = this.Exists(monitor => monitor.IsUnderPressure(utcNow));
             if (this.isUnderPressure != underPressure)
             {
                 this.isUnderPressure = underPressure;
                 this.CacheMonitor?.TrackCachePressureMonitorStatusChange(this.GetType().Name, this.isUnderPressure, null, null, null);
-                logger.LogInformation(
-                    this.isUnderPressure
-                    ? "Ingesting messages too fast. Throttling message reading."
-                    : "Message ingestion is healthy.");
+                if (this.isUnderPressure)
+                {
+                    LogInfoIngestingMessagesTooFast();
+                }
+                else
+                {
+                    LogInfoMessageIngestionIsHealthy();
+                }
             }
             return underPressure;
         }
+
+        [LoggerMessage(
+            Level = LogLevel.Information,
+            Message = "Ingesting messages too fast. Throttling message reading."
+        )]
+        private partial void LogInfoIngestingMessagesTooFast();
+
+        [LoggerMessage(
+            Level = LogLevel.Information,
+            Message = "Message ingestion is healthy."
+        )]
+        private partial void LogInfoMessageIngestionIsHealthy();
     }
 }
